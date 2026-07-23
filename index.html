@@ -199,7 +199,10 @@ const S = {
   thumbCache: {},      // path -> data URL (in-memory only)
   url: "",
   note: "",
+  related: "",
   lastUrl: "",
+  updUrl: "",        // "add recipe link" input on the detail page
+  updOpen: false,
   queueCount: null,
 };
 
@@ -292,7 +295,7 @@ async function prefetchThumbs(){
 }
 
 async function openRecipe(id){
-  S.currentId=id; S.screen="detail"; S.recipe=null; render();
+  S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.error=""; render();
   if(S.recipeCache[id]){ S.recipe=S.recipeCache[id]; render(); return; }
   const card = S.index.find(r=>r.id===id);
   try{
@@ -316,11 +319,12 @@ async function submitCapture(){
   const slug = url.replace(/^https?:\/\/(www\.)?/,"").replace(/[^\w]+/g,"-").slice(0,40).replace(/-+$/,"");
   const path = `inbox/${name}-${slug}.md`;
   const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
-  const body = `---\nurl: ${url}\ncaptured: ${captured}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
+  const relatedLine = S.related.trim() ? `related: ${S.related.trim()}\n` : "";
+  const body = `---\nurl: ${url}\n${relatedLine}captured: ${captured}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
   try{
     await gh(contentsUrl(path), { method:"PUT", body:JSON.stringify({
       message:`board: queue a link`, content:b64encode(body), branch:CFG.branch }) });
-    S.lastUrl=url; S.url=""; S.note=""; S.screen="captured"; render();
+    S.lastUrl=url; S.url=""; S.note=""; S.related=""; S.screen="captured"; render();
   }catch(e){
     S.error = "Could not queue: "+e.message; render();
   }
@@ -365,7 +369,8 @@ function parseRecipe(raw, card){
 
   return {
     id:f.id||card.id, title:f.title||card.title, source_url:f.source_url||"",
-    site:f.site||card.site, uploader:f.uploader||card.uploader, uploaded:f.uploaded||card.uploaded,
+    site:f.site||card.site, uploader:f.uploader||card.uploader,
+    added:card.added||f.captured||"", related:f.related||card.related||"",
     duration_s:f.duration_s, total_time:f.total_time||card.total_time,
     tags:Array.isArray(f.tags)?f.tags:(card.tags||[]),
     confidence:f.confidence||card.confidence||"medium", thumbnail:card.thumbnail||"",
@@ -429,7 +434,7 @@ function cardHTML(r){
     <div class="thumb">${thumbHTML(r.thumbnail)}${warn}${time}</div>
     <div class="card-body">
       <h3 class="card-title">${esc(r.title)}</h3>
-      <div class="card-stamp">${icon("cal",14)}Uploaded ${esc(shortDate(r.uploaded))||"—"}</div>
+      <div class="card-stamp">${icon("cal",14)}Added ${esc(shortDate(r.added))||"—"}</div>
       ${tags?`<div class="card-tags">${tags}</div>`:""}
     </div></button>`;
 }
@@ -457,7 +462,7 @@ function detailView(){
     <div class="wrap wrap-detail">
       <div class="hero">${thumbHTML(r.thumbnail,88)}</div>
       <h1 class="d-title">${esc(r.title)}</h1>
-      <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · uploaded ${esc(shortDate(r.uploaded))} ${tags}</div>
+      <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · added ${esc(shortDate(r.added))} ${tags}</div>
       <a class="btn btn-primary watch" href="${esc(r.source_url)}" target="_blank" rel="noopener">
         ${icon("ext")}Watch the original</a>
       ${banner}
@@ -470,8 +475,52 @@ function detailView(){
         ${seen.length?`<p style="margin:10px 0 0;font-size:13.5px;color:var(--color-accent-2-700)">Visually identified: ${
           seen.map(i=>esc(i.text.split("—")[0].trim())+" ("+esc(i.seen)+")").join(", ")}.</p>`:""}
       </div>
+      ${relatedBlock(r)}
       ${raw}
     </div>`;
+}
+
+// The written-recipe block on a detail page: show the link if the record has one, else
+// offer to add one. "Add recipe link" queues an update request the next PC run processes.
+function relatedBlock(r){
+  if(r.related){
+    return `<div class="source-card"><div class="kicker">Written recipe</div>
+      <a href="${esc(r.related)}" target="_blank" rel="noopener">${esc(r.related)}</a></div>`;
+  }
+  if(!S.updOpen){
+    return `<div class="source-card"><div class="kicker">Written recipe</div>
+      <p style="margin:0 0 10px;font-size:14px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">
+        Found the full recipe in the comments or a blog link? Add it and this recipe gets
+        re-processed with it the next time conversion runs.</p>
+      <button class="btn btn-secondary" data-act="open-upd">${icon("plus")}Add recipe link</button></div>`;
+  }
+  return `<div class="source-card"><div class="kicker">Add recipe link</div>
+    ${S.error?`<div class="err">${esc(S.error)}</div>`:""}
+    <input class="input" id="updurl" type="url" inputmode="url"
+      placeholder="https://…the written recipe" value="${esc(S.updUrl)}" style="margin-bottom:10px">
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-secondary" data-act="cancel-upd">Cancel</button>
+      <button class="btn btn-primary" data-act="do-upd">${icon("check")}Queue update</button>
+    </div></div>`;
+}
+
+async function submitUpdate(){
+  const link = S.updUrl.trim();
+  if(!link){ return; }
+  const r = S.recipe;
+  const t = new Date(); const p2 = n=>String(n).padStart(2,"0");
+  const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
+             + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z-update-${r.id}`;
+  const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
+  const body = `---\nkind: update\nrecipe: ${r.id}\nrelated: ${link}\ncaptured: ${captured}\nstatus: queued\n---\n\nAdd the written recipe and re-process.\n`;
+  try{
+    await gh(contentsUrl(`inbox/${name}.md`), { method:"PUT", body:JSON.stringify({
+      message:`board: request update for ${r.id}`, content:b64encode(body), branch:CFG.branch }) });
+    // Reflect it locally so the button doesn't invite a duplicate request this session.
+    S.recipe = Object.assign({}, r, {related: link});
+    S.recipeCache[r.id] = S.recipe;
+    S.updOpen=false; S.updUrl=""; S.error=""; render();
+  }catch(e){ S.error = "Could not queue the update: "+e.message; render(); }
 }
 
 function captureView(){
@@ -484,9 +533,12 @@ function captureView(){
         Drop a Facebook or YouTube link. Nothing downloads on your phone — it waits in line
         and converts next time you're at a machine.</p>
       ${S.error?`<div class="err">${esc(S.error)}</div>`:""}
-      <div class="field"><label>Recipe link</label>
+      <div class="field"><label>Video link</label>
         <input class="input" id="capurl" type="url" inputmode="url"
           placeholder="https://www.facebook.com/reel/…" value="${esc(S.url)}"></div>
+      <div class="field"><label>Recipe link (optional)</label>
+        <input class="input" id="caprelated" type="url" inputmode="url"
+          placeholder="https://…a written recipe, if you have it" value="${esc(S.related)}"></div>
       <div class="field"><label>Note (optional)</label>
         <textarea class="input" id="capnote" placeholder="e.g. the one Andrea sent Tuesday">${esc(S.note)}</textarea></div>
       <button class="btn btn-primary btn-block" data-act="do-capture" style="min-height:52px">${icon("plus")}Add to queue</button>
@@ -562,7 +614,9 @@ function wire(){
   const q=document.getElementById("q");
   if(q) q.oninput=()=>{ S.query=q.value; const g=document.querySelector(".wrap"); repaintList(); };
   const cu=document.getElementById("capurl"); if(cu) cu.oninput=()=>S.url=cu.value;
+  const cr=document.getElementById("caprelated"); if(cr) cr.oninput=()=>S.related=cr.value;
   const cn=document.getElementById("capnote"); if(cn) cn.oninput=()=>S.note=cn.value;
+  const uu=document.getElementById("updurl"); if(uu) uu.oninput=()=>S.updUrl=uu.value;
 }
 
 // Live search without losing input focus: repaint only the count + grid.
@@ -591,6 +645,9 @@ function act(a){
     case "capture":  S.screen="capture"; S.error=""; render(); break;
     case "setup":    S.screen="setup"; S.error=""; render(); break;
     case "do-capture": submitCapture(); break;
+    case "open-upd":   S.updOpen=true; S.error=""; render(); break;
+    case "cancel-upd": S.updOpen=false; S.updUrl=""; S.error=""; render(); break;
+    case "do-upd":     submitUpdate(); break;
     case "save-token": {
       const v=document.getElementById("tok").value.trim();
       if(!v) return;
