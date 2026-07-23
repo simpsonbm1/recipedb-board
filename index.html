@@ -49,6 +49,12 @@ a{color:var(--color-accent-700)}
 .btn-primary:hover{filter:brightness(1.05)}
 .btn-secondary{background:var(--color-surface); color:var(--color-text)}
 .btn-secondary:hover{filter:brightness(.98)}
+.btn-danger{background:#b23b2e; color:#fff}
+.btn-danger:hover{filter:brightness(1.06)}
+.btn-del-ghost{background:transparent; color:#b23b2e; border:1.5px solid rgba(178,59,46,.35)}
+.btn-del-ghost:hover{background:rgba(178,59,46,.08)}
+.del-zone{margin-top:30px; padding-top:22px; border-top:1px solid var(--color-neutral-100); text-align:center}
+.del-confirm{border:1.5px solid rgba(178,59,46,.4)}
 .btn-icon{padding:0; width:38px; height:38px}
 .btn-block{width:100%}
 
@@ -203,6 +209,8 @@ const S = {
   lastUrl: "",
   updUrl: "",        // "add recipe link" input on the detail page
   updOpen: false,
+  delOpen: false,    // "delete this recipe" confirmation on the detail page
+  delQueued: false,  // a delete request has been queued for the current recipe this session
   queueCount: null,
 };
 
@@ -216,6 +224,7 @@ const ICONS = {
   ext:"M15 3h6v6M10 14L21 3M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6",
   eye:"M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7zM12 15a3 3 0 100-6 3 3 0 000 6z",
   check:"M20 6L9 17l-5-5", utensils:"M3 2v7a3 3 0 003 3v10M8 2v20M17 2c-1.5 0-3 2-3 5s1.5 5 3 5v8",
+  trash:"M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M10 11v6M14 11v6",
 };
 function icon(name, size=20){
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
@@ -295,7 +304,7 @@ async function prefetchThumbs(){
 }
 
 async function openRecipe(id){
-  S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.error=""; render();
+  S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.delOpen=false; S.delQueued=false; S.error=""; render();
   if(S.recipeCache[id]){ S.recipe=S.recipeCache[id]; render(); return; }
   const card = S.index.find(r=>r.id===id);
   try{
@@ -477,7 +486,50 @@ function detailView(){
       </div>
       ${relatedBlock(r)}
       ${raw}
+      ${deleteBlock(r)}
     </div>`;
+}
+
+// Delete lives at the very bottom, under the transcript, and is a two-step ask: a quiet
+// "Delete this recipe" button that expands to an explicit "are you sure?" confirm. Confirming
+// does NOT delete here - it queues a `kind: delete` request that the next PC conversion run
+// surfaces for a second confirmation before actually removing anything.
+function deleteBlock(r){
+  if(S.delQueued){
+    return `<div class="source-card del-confirm" style="margin-top:30px">
+      <div class="kicker">Delete requested</div>
+      <p style="margin:0;font-size:14px;color:color-mix(in srgb,var(--color-text) 78%,transparent)">
+        “${esc(r.title)}” will be removed the next time conversion runs on a computer.
+        It stays recoverable from history until then and after.</p></div>`;
+  }
+  if(!S.delOpen){
+    return `<div class="del-zone">
+      <button class="btn btn-del-ghost" data-act="open-del">${icon("trash")}Delete this recipe</button></div>`;
+  }
+  return `<div class="source-card del-confirm" style="margin-top:30px">
+    <div class="kicker">Delete this recipe?</div>
+    ${S.error?`<div class="err">${esc(S.error)}</div>`:""}
+    <p style="margin:0 0 12px;font-size:14px;color:color-mix(in srgb,var(--color-text) 78%,transparent)">
+      This queues a delete request. “${esc(r.title)}” is removed the next time conversion runs on
+      a computer — and it stays recoverable from history if you change your mind.</p>
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-secondary" data-act="cancel-del">No, keep it</button>
+      <button class="btn btn-danger" data-act="do-del">${icon("trash")}Yes, delete</button>
+    </div></div>`;
+}
+
+async function submitDelete(){
+  const r = S.recipe;
+  const t = new Date(); const p2 = n=>String(n).padStart(2,"0");
+  const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
+             + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z-delete-${r.id}`;
+  const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
+  const body = `---\nkind: delete\nrecipe: ${r.id}\ncaptured: ${captured}\nstatus: queued\n---\n\nDelete this recipe (requested from the board).\n`;
+  try{
+    await gh(contentsUrl(`inbox/${name}.md`), { method:"PUT", body:JSON.stringify({
+      message:`board: request delete for ${r.id}`, content:b64encode(body), branch:CFG.branch }) });
+    S.delOpen=false; S.delQueued=true; S.error=""; render();
+  }catch(e){ S.error = "Could not queue the delete: "+e.message; render(); }
 }
 
 // The written-recipe block on a detail page: show the link if the record has one, else
@@ -648,6 +700,9 @@ function act(a){
     case "open-upd":   S.updOpen=true; S.error=""; render(); break;
     case "cancel-upd": S.updOpen=false; S.updUrl=""; S.error=""; render(); break;
     case "do-upd":     submitUpdate(); break;
+    case "open-del":   S.delOpen=true; S.error=""; render(); break;
+    case "cancel-del": S.delOpen=false; S.error=""; render(); break;
+    case "do-del":     submitDelete(); break;
     case "save-token": {
       const v=document.getElementById("tok").value.trim();
       if(!v) return;
