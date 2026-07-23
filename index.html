@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>recipedb</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#f5ead8">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+@import url("https://fonts.googleapis.com/css2?family=Caprasimo&family=Figtree:wght@400;500;600;700&display=swap");
+
+/* ── Organic design tokens (from design_handoff_recipe_board/organic-styles.css) ── */
+:root{
+  --color-bg:#f5ead8; --color-surface:#ebddc5; --color-text:#201e1d;
+  --color-accent:#c67139; --color-accent-2:#7a8a5e;
+  --color-divider:color-mix(in srgb,#201e1d 16%,transparent);
+  --color-neutral-100:#f9f4ed; --color-neutral-900:#2e2b25;
+  --color-accent-100:#fff2eb; --color-accent-200:#ffe1d0; --color-accent-500:#d67f48;
+  --color-accent-700:#8c491a; --color-accent-800:#643312;
+  --color-accent-2-100:#f0fae1; --color-accent-2-200:#e1eecc; --color-accent-2-500:#8fa073;
+  --color-accent-2-700:#56633f; --color-accent-2-800:#3d472b;
+  --font-heading:"Caprasimo",Georgia,serif;
+  --font-body:"Figtree",system-ui,sans-serif;
+  --radius-lg:28px;
+  --shadow-sm:0 1px 2px color-mix(in srgb,#2e2b25 14%,transparent);
+  --shadow-md:0 3px 10px color-mix(in srgb,#2e2b25 16%,transparent);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:var(--color-bg); color:var(--color-text);
+  font-family:var(--font-body); font-size:16px; line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{font-family:var(--font-heading); font-weight:400; margin:0}
+button{font-family:inherit}
+a{color:var(--color-accent-700)}
+
+/* ── buttons ── */
+.btn{
+  display:inline-flex; align-items:center; gap:8px; justify-content:center;
+  border:none; border-radius:999px; padding:10px 18px; font-size:15px; font-weight:600;
+  cursor:pointer; white-space:nowrap; text-decoration:none; transition:filter .12s;
+}
+.btn:active{transform:translateY(1px)}
+.btn:focus-visible{outline:2px solid var(--color-accent); outline-offset:2px}
+.btn-primary{background:var(--color-accent); color:var(--color-bg)}
+.btn-primary:hover{filter:brightness(1.05)}
+.btn-secondary{background:var(--color-surface); color:var(--color-text)}
+.btn-secondary:hover{filter:brightness(.98)}
+.btn-icon{padding:0; width:38px; height:38px}
+.btn-block{width:100%}
+
+/* ── tags ── */
+.tag{
+  display:inline-flex; align-items:center; gap:5px;
+  padding:3px 10px; border-radius:999px; font-size:12.5px; font-weight:600; white-space:nowrap;
+}
+.tag-sage{background:var(--color-accent-2-100); color:var(--color-accent-2-800)}
+.tag-accent{background:var(--color-accent); color:var(--color-bg)}
+
+/* ── inputs ── */
+.field{display:flex; flex-direction:column; gap:7px; margin-bottom:16px}
+.field label{font-size:13px; font-weight:600; color:color-mix(in srgb,var(--color-text) 70%,transparent)}
+.input{
+  width:100%; min-height:48px; border:1.5px solid var(--color-divider); background:var(--color-neutral-100);
+  border-radius:16px; padding:12px 15px; font-size:16px; font-family:inherit; color:var(--color-text);
+}
+.input:focus{outline:2px solid var(--color-accent); outline-offset:0; border-color:transparent}
+textarea.input{min-height:88px; resize:vertical}
+
+/* ── layout ── */
+.wrap{max-width:940px; margin:0 auto; padding:8px 18px 44px}
+.wrap-narrow{max-width:560px}
+.wrap-detail{max-width:720px; padding:8px 20px 60px}
+.header{
+  position:sticky; top:0; z-index:10;
+  background:color-mix(in srgb,var(--color-bg) 92%,transparent); backdrop-filter:blur(8px);
+  padding:12px 18px 10px;
+}
+.header .wrap{padding:0; display:flex; flex-direction:column; gap:12px}
+.hrow{display:flex; align-items:center; gap:10px}
+.brand{font-family:var(--font-heading); font-size:23px; letter-spacing:-0.01em; margin-right:auto}
+.searchbox{position:relative}
+.searchbox .ic{position:absolute; left:15px; top:50%; transform:translateY(-50%);
+  color:color-mix(in srgb,var(--color-text) 45%,transparent); pointer-events:none}
+.searchbox .input{padding-left:44px}
+.countline{font-size:13px; text-transform:uppercase; letter-spacing:0.02em;
+  color:color-mix(in srgb,var(--color-text) 55%,transparent); margin:14px 2px 12px}
+
+/* ── cards ── */
+.grid{display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr))}
+.card{
+  display:flex; flex-direction:column; text-align:left; background:var(--color-surface);
+  border:none; border-radius:26px; box-shadow:var(--shadow-sm); overflow:hidden; cursor:pointer;
+  padding:0; transition:box-shadow .15s, transform .15s;
+}
+.card:hover{box-shadow:var(--shadow-md); transform:translateY(-2px)}
+.card:focus-visible{outline:2px solid var(--color-accent); outline-offset:2px}
+.thumb{position:relative; height:154px; background:
+  linear-gradient(135deg,#c9a889,#b48a66); overflow:hidden}
+.thumb img{width:100%; height:100%; object-fit:cover;
+  filter:saturate(.72) contrast(.9) brightness(1.05)}
+.thumb .ph{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  color:color-mix(in srgb,#fff 55%,transparent)}
+.chip-time{position:absolute; right:10px; bottom:10px; display:inline-flex; align-items:center; gap:5px;
+  background:color-mix(in srgb,var(--color-neutral-900) 55%,transparent); color:#fff;
+  font-size:12px; font-weight:600; padding:4px 9px; border-radius:999px}
+.chip-warn{position:absolute; left:10px; top:10px; display:inline-flex; align-items:center; gap:5px;
+  background:var(--color-accent); color:var(--color-bg);
+  font-size:11px; font-weight:700; padding:4px 9px; border-radius:999px}
+.card-body{padding:14px 16px 16px; display:flex; flex-direction:column; gap:10px}
+.card-title{font-size:19px; line-height:1.16; letter-spacing:-0.01em}
+.card-stamp{display:flex; align-items:center; gap:6px; font-size:12.5px;
+  color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.card-tags{display:flex; flex-wrap:wrap; gap:6px}
+
+/* ── detail ── */
+.hero{height:210px; border-radius:26px; overflow:hidden; margin-bottom:18px; position:relative;
+  background:linear-gradient(135deg,#c9a889,#b48a66)}
+.hero img{width:100%; height:100%; object-fit:cover; filter:saturate(.72) contrast(.9) brightness(1.05)}
+.hero .ph{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  color:color-mix(in srgb,#fff 55%,transparent)}
+.d-title{font-size:32px; line-height:1.08; letter-spacing:-0.015em; text-wrap:pretty; margin-bottom:10px}
+.d-meta{font-size:14px; color:color-mix(in srgb,var(--color-text) 60%,transparent);
+  display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:16px}
+.watch{margin:6px 0 22px}
+.banner{background:var(--color-accent-200); border:1.5px solid var(--color-accent);
+  border-radius:20px; padding:16px 18px; display:flex; gap:12px; margin-bottom:24px}
+.banner h3{font-size:17px; color:var(--color-accent-800); margin-bottom:4px}
+.banner p{margin:0; font-size:14px; color:var(--color-accent-800)}
+.banner .ic{color:var(--color-accent-700); flex-shrink:0; margin-top:2px}
+h2.sec{font-size:24px; margin:26px 0 12px}
+ul.ings{list-style:none; margin:0; padding:0}
+ul.ings li{display:flex; align-items:flex-start; gap:11px; padding:11px 0;
+  border-bottom:1px solid var(--color-divider); font-size:18px; line-height:1.35}
+ul.ings li .dot{width:9px; height:9px; border-radius:50%; background:var(--color-accent-2);
+  margin-top:9px; flex-shrink:0}
+.seen{display:inline-flex; align-items:center; gap:4px; margin-left:8px; vertical-align:middle;
+  background:var(--color-accent-2-100); color:var(--color-accent-2-800);
+  font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px; white-space:nowrap}
+ol.steps{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:16px}
+ol.steps li{display:flex; gap:13px; font-size:16px; line-height:1.5}
+ol.steps li .num{flex-shrink:0; width:32px; height:32px; border-radius:50%;
+  background:var(--color-accent); color:var(--color-bg); font-family:var(--font-heading);
+  font-size:16px; display:flex; align-items:center; justify-content:center}
+.notes{font-size:16px; color:color-mix(in srgb,var(--color-text) 82%,transparent)}
+.source-card{background:var(--color-surface); border-radius:22px; padding:16px 18px; margin-top:14px}
+.kicker{font-family:var(--font-heading); font-size:15px; text-transform:uppercase;
+  letter-spacing:0.03em; color:var(--color-accent-700); margin-bottom:8px}
+.source-card a{word-break:break-all}
+details.raw{background:var(--color-neutral-100); border-radius:18px; padding:14px 16px; margin-top:20px}
+details.raw summary{cursor:pointer; font-weight:600; font-size:14px}
+details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:12px 0 0;
+  font-family:ui-monospace,Menlo,Consolas,monospace; color:color-mix(in srgb,var(--color-text) 80%,transparent)}
+
+/* ── centered flows ── */
+.center{max-width:460px; margin:40px auto 0; text-align:center; padding:0 20px}
+.center .circle{width:74px; height:74px; border-radius:50%; margin:0 auto 18px;
+  display:flex; align-items:center; justify-content:center}
+.center h1{font-size:30px; margin-bottom:10px}
+.center p{color:color-mix(in srgb,var(--color-text) 72%,transparent); margin:0 0 22px}
+.info-card{background:var(--color-surface); border-radius:20px; padding:16px 18px; text-align:left; margin:18px 0}
+.info-card li{margin:6px 0}
+.finetext{font-size:13px; color:color-mix(in srgb,var(--color-text) 55%,transparent); margin-top:14px}
+.empty{text-align:center; padding:48px 20px; color:color-mix(in srgb,var(--color-text) 60%,transparent)}
+.empty .l1{font-size:17px; margin-bottom:6px}
+.err{background:var(--color-accent-200); border:1.5px solid var(--color-accent);
+  color:var(--color-accent-800); border-radius:16px; padding:12px 16px; margin:16px 0; font-size:14px}
+.spin{text-align:center; padding:60px 20px; color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+   recipedb board — the phone-first PWA half of recipedb.
+
+   Public shell, private data. This repo holds NO recipes; it reads them at
+   runtime from the private simpsonbm1/recipedb repo through the GitHub REST API
+   with a fine-grained PAT the user pastes once and that lives in localStorage.
+   Sibling of worktracker-board; the API layer is modelled on it.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const CFG = { owner:"simpsonbm1", repo:"recipedb", branch:"main" };
+const LS  = { tok:"rdb.token" };
+
+const S = {
+  screen: "list",
+  token: localStorage.getItem(LS.tok) || "",
+  query: "",
+  index: [],           // cards from recipes/index.json
+  loading: false,
+  error: "",
+  currentId: "",
+  recipe: null,        // parsed detail for currentId
+  recipeCache: {},     // id -> parsed recipe
+  thumbCache: {},      // path -> data URL (in-memory only)
+  url: "",
+  note: "",
+  lastUrl: "",
+  queueCount: null,
+};
+
+/* ── icons (Lucide paths, stroke 2.5) ── */
+const ICONS = {
+  plus:"M5 12h14M12 5v14", search:"M21 21l-4.3-4.3M11 19a8 8 0 100-16 8 8 0 000 16z",
+  key:"M2.5 21.5l4-4M7 17l2.5 2.5M15 9a4 4 0 10-4 4l1 1 3-3-1-1 1-1zM19.5 4.5l-3 3",
+  back:"M15 18l-6-6 6-6", clock:"M12 7v5l3 2M12 21a9 9 0 100-18 9 9 0 000 18z",
+  cal:"M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z",
+  warn:"M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.4 3.9a2 2 0 00-3.4 0z",
+  ext:"M15 3h6v6M10 14L21 3M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6",
+  eye:"M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7zM12 15a3 3 0 100-6 3 3 0 000 6z",
+  check:"M20 6L9 17l-5-5", utensils:"M3 2v7a3 3 0 003 3v10M8 2v20M17 2c-1.5 0-3 2-3 5s1.5 5 3 5v8",
+};
+function icon(name, size=20){
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+    style="flex-shrink:0"><path d="${ICONS[name]}"/></svg>`;
+}
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* ── base64 (unicode-safe) ── */
+function b64decode(b64){
+  const bin = atob(String(b64).replace(/\s/g,""));
+  return new TextDecoder().decode(Uint8Array.from(bin, c=>c.charCodeAt(0)));
+}
+function b64encode(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin=""; const CH=0x8000;
+  for(let i=0;i<bytes.length;i+=CH) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+CH));
+  return btoa(bin);
+}
+
+/* ── GitHub API ── */
+async function gh(path, opts={}){
+  const res = await fetch("https://api.github.com"+path, {
+    ...opts,
+    headers:{ Authorization:"Bearer "+S.token, Accept:"application/vnd.github+json",
+              "X-GitHub-Api-Version":"2022-11-28", ...(opts.headers||{}) }
+  });
+  if(!res.ok){
+    let detail=""; try{ detail=(await res.json()).message||""; }catch{}
+    const e = new Error(`${res.status} ${detail}`); e.status=res.status; throw e;
+  }
+  return res.json();
+}
+function contentsUrl(p){ return `/repos/${CFG.owner}/${CFG.repo}/contents/${encodeURI(p)}`; }
+
+async function getFile(p){
+  // Cache-bust: GitHub sends max-age on contents, so a just-added recipe can be invisible.
+  const j = await gh(`${contentsUrl(p)}?ref=${CFG.branch}&_=${Date.now()}`, { cache:"no-store" });
+  return { text:b64decode(j.content), sha:j.sha };
+}
+
+async function loadIndex(){
+  S.loading=true; S.error=""; render();
+  try{
+    const { text } = await getFile("recipes/index.json");
+    const idx = JSON.parse(text);
+    S.index = idx.recipes || [];
+    S.loading=false; render();
+    prefetchThumbs();
+  }catch(e){
+    S.loading=false;
+    S.error = e.status===401 ? "Token rejected (401). It may be expired or lack Contents access."
+            : e.status===404 ? "No recipes yet, or the token can't reach simpsonbm1/recipedb (404)."
+            : e.status===403 ? "Forbidden (403) — rate limited, or the token lacks Contents permission."
+            : "Load failed: "+e.message;
+    render();
+  }
+}
+
+async function loadThumb(path){
+  if(!path || S.thumbCache[path]) return;
+  try{
+    const j = await gh(`${contentsUrl(path)}?ref=${CFG.branch}`);
+    S.thumbCache[path] = "data:image/jpeg;base64," + j.content.replace(/\s/g,"");
+  }catch{ S.thumbCache[path] = ""; }
+}
+async function prefetchThumbs(){
+  for(const r of S.index){
+    if(r.thumbnail && !(r.thumbnail in S.thumbCache)){
+      await loadThumb(r.thumbnail);
+      // Repaint the one card as its image arrives.
+      const el = document.querySelector(`[data-thumb="${CSS.escape(r.thumbnail)}"]`);
+      if(el && S.thumbCache[r.thumbnail]) el.outerHTML =
+        `<img src="${S.thumbCache[r.thumbnail]}" alt="">`;
+    }
+  }
+}
+
+async function openRecipe(id){
+  S.currentId=id; S.screen="detail"; S.recipe=null; render();
+  if(S.recipeCache[id]){ S.recipe=S.recipeCache[id]; render(); return; }
+  const card = S.index.find(r=>r.id===id);
+  try{
+    const { text } = await getFile(card.file);
+    S.recipe = parseRecipe(text, card);
+    S.recipeCache[id] = S.recipe;
+    render();
+    if(card.thumbnail){ await loadThumb(card.thumbnail); render(); }
+  }catch(e){ S.error="Could not open recipe: "+e.message; render(); }
+}
+
+async function submitCapture(){
+  const url = S.url.trim();
+  if(!url) return;
+  const stamp = new Date().toISOString().replace(/[-:]/g,"").replace(/\.\d+Z$/,"Z").slice(0,15);
+  // YYYYMMDDTHHMMZ  (matches the CLI's inbox filename stem)
+  const t = new Date();
+  const p2 = n=>String(n).padStart(2,"0");
+  const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
+             + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z`;
+  const slug = url.replace(/^https?:\/\/(www\.)?/,"").replace(/[^\w]+/g,"-").slice(0,40).replace(/-+$/,"");
+  const path = `inbox/${name}-${slug}.md`;
+  const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
+  const body = `---\nurl: ${url}\ncaptured: ${captured}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
+  try{
+    await gh(contentsUrl(path), { method:"PUT", body:JSON.stringify({
+      message:`board: queue a link`, content:b64encode(body), branch:CFG.branch }) });
+    S.lastUrl=url; S.url=""; S.note=""; S.screen="captured"; render();
+  }catch(e){
+    S.error = "Could not queue: "+e.message; render();
+  }
+}
+
+/* ── parsing ── */
+function parseRecipe(raw, card){
+  raw = String(raw).replace(/^﻿/, "");
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  const f={}; let body="";
+  if(m){
+    m[1].split(/\r?\n/).forEach(line=>{
+      const kv = line.match(/^([A-Za-z_]+):\s*(.*)$/); if(!kv) return;
+      let v=kv[2].trim();
+      if(/^\[.*\]$/.test(v)){ const inner=v.slice(1,-1).trim();
+        v = inner?inner.split(",").map(x=>x.trim().replace(/^["']|["']$/g,"")).filter(Boolean):[]; }
+      else v=v.replace(/^["']|["']$/g,"");
+      f[kv[1]]=v;
+    });
+    body=m[2]||"";
+  }
+  // sections
+  const sec={}; let cur=null, buf=[];
+  body.split(/\r?\n/).forEach(line=>{
+    const h=line.match(/^##\s+(.*)$/);
+    if(h){ if(cur) sec[cur]=buf.join("\n").trim(); cur=h[1].trim().toLowerCase(); buf=[]; }
+    else if(cur!==null) buf.push(line);
+  });
+  if(cur) sec[cur]=buf.join("\n").trim();
+
+  const ingredients = (sec.ingredients||"").split(/\r?\n/).filter(l=>l.trim().startsWith("- "))
+    .map(l=>{
+      let t=l.replace(/^-\s+/,"");
+      const seen=t.match(/\*\(identified from video,\s*([^)]+)\)\*/);
+      t=t.replace(/\s*\*\(identified from video,[^)]+\)\*/,"").trim();
+      return { text:t, seen: seen?seen[1].trim():null };
+    });
+  const steps = (sec.steps||"").split(/\r?\n/).map(l=>l.match(/^\d+\.\s+(.*)$/))
+    .filter(Boolean).map(m=>m[1].trim());
+  const rawMatch = (sec["raw extraction"]||"").match(/```([\s\S]*?)```/);
+  const rawLabel = (sec["raw extraction"]||"").match(/<summary>(.*?)<\/summary>/);
+
+  return {
+    id:f.id||card.id, title:f.title||card.title, source_url:f.source_url||"",
+    site:f.site||card.site, uploader:f.uploader||card.uploader, uploaded:f.uploaded||card.uploaded,
+    duration_s:f.duration_s, total_time:f.total_time||card.total_time,
+    tags:Array.isArray(f.tags)?f.tags:(card.tags||[]),
+    confidence:f.confidence||card.confidence||"medium", thumbnail:card.thumbnail||"",
+    ingredients, steps, notes:sec.notes||"",
+    raw: rawMatch?rawMatch[1].trim():"", rawLabel: rawLabel?rawLabel[1]:"raw extraction",
+  };
+}
+
+/* ── date helper ── */
+function shortDate(iso){
+  if(!iso) return "";
+  const m=String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); if(!m) return iso;
+  const mo=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+m[2]-1];
+  return `${mo} ${+m[3]}`;
+}
+
+/* ══ views ══ */
+function thumbHTML(path, ph=64){
+  if(path && S.thumbCache[path]) return `<img src="${S.thumbCache[path]}" alt="">`;
+  if(path) return `<span class="ph" data-thumb="${esc(path)}">${icon("utensils",ph)}</span>`;
+  return `<span class="ph">${icon("utensils",ph)}</span>`;
+}
+
+function listView(){
+  const q=S.query.trim().toLowerCase();
+  const rows = q ? S.index.filter(r=>(r.search||"").includes(q)) : S.index;
+  const count = q ? `${rows.length} match${rows.length===1?"":"es"} for “${esc(S.query.trim())}”`
+                  : `${S.index.length} recipe${S.index.length===1?"":"s"}`;
+  let body;
+  if(S.loading) body=`<div class="spin">Loading your recipes…</div>`;
+  else if(S.error) body=`<div class="err">${esc(S.error)}</div>`;
+  else if(!rows.length && q) body=`<div class="empty"><div class="l1">Nothing matches that yet.</div>
+    <div>Try a single ingredient — the corpus is small and personal.</div></div>`;
+  else if(!rows.length) body=`<div class="empty"><div class="l1">No recipes yet.</div>
+    <div>Paste a link to queue your first one.</div></div>`;
+  else body=`<div class="grid">${rows.map(cardHTML).join("")}</div>`;
+
+  return `<div class="header"><div class="wrap">
+    <div class="hrow">
+      <span class="brand">recipedb</span>
+      <button class="btn btn-secondary btn-icon" data-act="setup" title="Connect">${icon("key")}</button>
+      <button class="btn btn-primary" data-act="capture">${icon("plus")}Paste link</button>
+    </div>
+    <div class="searchbox"><span class="ic">${icon("search",18)}</span>
+      <input class="input" id="q" placeholder="Search an ingredient, dish or tag…"
+        value="${esc(S.query)}" autocomplete="off"></div>
+  </div></div>
+  <div class="wrap" id="listbody">
+    <div class="countline">${count}</div>
+    ${body}
+  </div>`;
+}
+
+function cardHTML(r){
+  const warn = r.confidence==="low"
+    ? `<span class="chip-warn">${icon("warn",13)}Check video</span>` : "";
+  const time = r.total_time
+    ? `<span class="chip-time">${icon("clock",13)}${esc(r.total_time)}</span>` : "";
+  const tags = (r.tags||[]).slice(0,4).map(t=>`<span class="tag tag-sage">${esc(t)}</span>`).join("");
+  return `<button class="card" data-open="${esc(r.id)}">
+    <div class="thumb">${thumbHTML(r.thumbnail)}${warn}${time}</div>
+    <div class="card-body">
+      <h3 class="card-title">${esc(r.title)}</h3>
+      <div class="card-stamp">${icon("cal",14)}Uploaded ${esc(shortDate(r.uploaded))||"—"}</div>
+      ${tags?`<div class="card-tags">${tags}</div>`:""}
+    </div></button>`;
+}
+
+function detailView(){
+  const r=S.recipe;
+  if(!r) return `<div class="header"><div class="wrap"><div class="hrow">
+      <button class="btn btn-secondary" data-act="list">${icon("back")}All recipes</button>
+    </div></div></div><div class="spin">Opening…</div>`;
+  const tags=(r.tags||[]).map(t=>`<span class="tag tag-sage">${esc(t)}</span>`).join("");
+  const banner = r.confidence==="low" ? `<div class="banner">${icon("warn",22)}
+    <div><h3>Low confidence — this list may be incomplete</h3>
+    <p>Some of this was hard to make out. Watch the video before you shop.</p></div></div>` : "";
+  const ings = r.ingredients.map(i=>`<li><span class="dot"></span><span>${esc(i.text)}${
+    i.seen?`<span class="seen">${icon("eye",13)}seen in video ${esc(i.seen)}</span>`:""}</span></li>`).join("");
+  const steps = r.steps.map(s=>`<li><span class="num"></span><span>${esc(s)}</span></li>`)
+    .map((h,idx)=>h.replace('class="num">','class="num">'+(idx+1))).join("");
+  const notes = r.notes?`<h2 class="sec">Notes</h2><p class="notes">${esc(r.notes)}</p>`:"";
+  const seen = r.ingredients.filter(i=>i.seen);
+  const raw = r.raw?`<details class="raw"><summary>▸ Raw extraction — ${esc(r.rawLabel)}</summary>
+    <pre>${esc(r.raw)}</pre></details>`:"";
+  return `<div class="header"><div class="wrap"><div class="hrow">
+      <button class="btn btn-secondary" data-act="list">${icon("back")}All recipes</button>
+    </div></div></div>
+    <div class="wrap wrap-detail">
+      <div class="hero">${thumbHTML(r.thumbnail,88)}</div>
+      <h1 class="d-title">${esc(r.title)}</h1>
+      <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · uploaded ${esc(shortDate(r.uploaded))} ${tags}</div>
+      <a class="btn btn-primary watch" href="${esc(r.source_url)}" target="_blank" rel="noopener">
+        ${icon("ext")}Watch the original</a>
+      ${banner}
+      <h2 class="sec">Ingredients</h2><ul class="ings">${ings}</ul>
+      <h2 class="sec">Steps</h2><ol class="steps">${steps}</ol>
+      ${notes}
+      <div class="source-card"><div class="kicker">Source</div>
+        <p style="margin:0 0 8px">The link is the fallback for anything the video showed but never said out loud — keep it.</p>
+        <a href="${esc(r.source_url)}" target="_blank" rel="noopener">${esc(r.source_url)}</a>
+        ${seen.length?`<p style="margin:10px 0 0;font-size:13.5px;color:var(--color-accent-2-700)">Visually identified: ${
+          seen.map(i=>esc(i.text.split("—")[0].trim())+" ("+esc(i.seen)+")").join(", ")}.</p>`:""}
+      </div>
+      ${raw}
+    </div>`;
+}
+
+function captureView(){
+  return `<div class="header"><div class="wrap"><div class="hrow">
+      <button class="btn btn-secondary" data-act="list">${icon("back")}Back</button>
+    </div></div></div>
+    <div class="wrap wrap-narrow">
+      <h1 style="font-size:30px;margin:6px 0 10px">Queue a video</h1>
+      <p style="color:color-mix(in srgb,var(--color-text) 72%,transparent);margin:0 0 22px">
+        Drop a Facebook or YouTube link. Nothing downloads on your phone — it waits in line
+        and converts next time you're at a machine.</p>
+      ${S.error?`<div class="err">${esc(S.error)}</div>`:""}
+      <div class="field"><label>Recipe link</label>
+        <input class="input" id="capurl" type="url" inputmode="url"
+          placeholder="https://www.facebook.com/reel/…" value="${esc(S.url)}"></div>
+      <div class="field"><label>Note (optional)</label>
+        <textarea class="input" id="capnote" placeholder="e.g. the one Andrea sent Tuesday">${esc(S.note)}</textarea></div>
+      <button class="btn btn-primary btn-block" data-act="do-capture" style="min-height:52px">${icon("plus")}Add to queue</button>
+    </div>`;
+}
+
+function capturedView(){
+  return `<div class="center">
+    <div class="circle" style="background:var(--color-accent-2-200)">
+      <span style="color:var(--color-accent-2-700)">${icon("check",34)}</span></div>
+    <h1>Queued</h1>
+    <p>That link is in line. It'll convert next time you're at a machine — no rush.</p>
+    <div class="info-card"><div style="word-break:break-all;margin-bottom:8px">${esc(S.lastUrl)}</div>
+      <span class="tag tag-sage">queued</span></div>
+    <div style="display:flex;gap:10px;justify-content:center;margin-top:8px">
+      <button class="btn btn-secondary" data-act="capture">Paste another</button>
+      <button class="btn btn-primary" data-act="list">Back to recipes</button>
+    </div></div>`;
+}
+
+function setupView(){
+  const first = !S.token;
+  return `<div class="header"><div class="wrap"><div class="hrow">
+      ${first?"":`<button class="btn btn-secondary" data-act="list">${icon("back")}Back</button>`}
+    </div></div></div>
+    <div class="wrap wrap-narrow">
+      <div class="circle" style="background:var(--color-accent-100);width:64px;height:64px;
+        display:flex;align-items:center;justify-content:center;border-radius:50%;margin-bottom:16px">
+        <span style="color:var(--color-accent-700)">${icon("key",28)}</span></div>
+      <h1 style="font-size:30px;margin:0 0 10px">Connect your recipes</h1>
+      <p style="color:color-mix(in srgb,var(--color-text) 72%,transparent);margin:0 0 20px">
+        One-time setup. Paste a GitHub access token so this board can read your recipes and
+        add links to the queue. It's stored on this phone and nowhere else.</p>
+      ${S.error?`<div class="err">${esc(S.error)}</div>`:""}
+      <div class="field"><label>GitHub access token</label>
+        <input class="input" id="tok" type="password" autocomplete="off" spellcheck="false"
+          style="font-family:ui-monospace,monospace" placeholder="github_pat_11ABCD…" value=""></div>
+      <p style="margin:0 0 16px"><a href="https://github.com/settings/personal-access-tokens/new"
+        target="_blank" rel="noopener">How to create a fine-grained token ${icon("ext",14)}</a></p>
+      <div class="info-card"><div class="kicker">The token needs</div><ul style="margin:0;padding-left:18px">
+        <li>Repository access — only <strong>simpsonbm1/recipedb</strong></li>
+        <li>Permission — <strong>Contents: Read and write</strong></li>
+        <li>Nothing else — no other repos, no account scopes</li></ul></div>
+      <button class="btn btn-primary btn-block" data-act="save-token" style="min-height:52px">${icon("check")}Save &amp; open recipes</button>
+      <p class="finetext">Stored on this device only (localStorage). It never leaves your phone
+        except to talk to GitHub. Anyone with the unlocked phone can read it.</p>
+    </div>`;
+}
+
+/* ══ render + wiring ══ */
+function render(){
+  const app=document.getElementById("app");
+  if(!S.token && S.screen!=="setup") S.screen="setup";
+  let html;
+  switch(S.screen){
+    case "detail":   html=detailView(); break;
+    case "capture":  html=captureView(); break;
+    case "captured": html=capturedView(); break;
+    case "setup":    html=setupView(); break;
+    default:         html=listView();
+  }
+  app.innerHTML=html;
+  wire();
+}
+
+function wire(){
+  document.querySelectorAll("[data-act]").forEach(el=>{
+    el.onclick=()=>act(el.getAttribute("data-act"));
+  });
+  document.querySelectorAll("[data-open]").forEach(el=>{
+    el.onclick=()=>openRecipe(el.getAttribute("data-open"));
+  });
+  const q=document.getElementById("q");
+  if(q) q.oninput=()=>{ S.query=q.value; const g=document.querySelector(".wrap"); repaintList(); };
+  const cu=document.getElementById("capurl"); if(cu) cu.oninput=()=>S.url=cu.value;
+  const cn=document.getElementById("capnote"); if(cn) cn.oninput=()=>S.note=cn.value;
+}
+
+// Live search without losing input focus: repaint only the count + grid.
+function repaintList(){
+  const q=S.query.trim().toLowerCase();
+  const rows=q?S.index.filter(r=>(r.search||"").includes(q)):S.index;
+  const wrap=document.getElementById("listbody");
+  if(!wrap) return;
+  const count=q?`${rows.length} match${rows.length===1?"":"es"} for “${esc(S.query.trim())}”`
+               :`${S.index.length} recipe${S.index.length===1?"":"s"}`;
+  const grid = rows.length
+    ? `<div class="grid">${rows.map(cardHTML).join("")}</div>`
+    : `<div class="empty"><div class="l1">Nothing matches that yet.</div>
+       <div>Try a single ingredient — the corpus is small and personal.</div></div>`;
+  wrap.innerHTML=`<div class="countline">${count}</div>${grid}`;
+  wrap.querySelectorAll("[data-open]").forEach(el=>el.onclick=()=>openRecipe(el.getAttribute("data-open")));
+  // reattach thumbnails already in memory
+  rows.forEach(r=>{ if(r.thumbnail&&S.thumbCache[r.thumbnail]){
+    const el=wrap.querySelector(`[data-thumb="${CSS.escape(r.thumbnail)}"]`);
+    if(el) el.outerHTML=`<img src="${S.thumbCache[r.thumbnail]}" alt="">`; }});
+}
+
+function act(a){
+  switch(a){
+    case "list":     S.screen="list"; S.error=""; render(); break;
+    case "capture":  S.screen="capture"; S.error=""; render(); break;
+    case "setup":    S.screen="setup"; S.error=""; render(); break;
+    case "do-capture": submitCapture(); break;
+    case "save-token": {
+      const v=document.getElementById("tok").value.trim();
+      if(!v) return;
+      S.token=v; localStorage.setItem(LS.tok,v); S.error=""; S.screen="list"; loadIndex();
+      break;
+    }
+  }
+}
+
+/* ── boot ── */
+if(S.token) loadIndex(); else render();
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
+}
+</script>
+</body>
+</html>

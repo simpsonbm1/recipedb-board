@@ -1,0 +1,13 @@
+.DS_Store
+Thumbs.db
+node_modules/
+
+# Guard rail: recipe data must NEVER land in this PUBLIC repo. See README.
+# The board reads these from the private repo at runtime; a copy here would leak them.
+recipes/
+inbox/
+index.json
+*.jpg
+*.jpeg
+*.png
+!icon-*.png
