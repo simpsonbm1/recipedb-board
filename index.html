@@ -722,9 +722,12 @@ function craftMatchNote(c,q){
 function craftCardHTML(c){
   const q=S.craftQuery.trim().toLowerCase();
   const dur = c.duration_s ? `<span class="chip-time">${icon("clock",13)}${mmss(c.duration_s)}</span>` : "";
-  const silent = !c.has_method ? `<span class="chip-warn">${icon("eye",13)}Watch it</span>` : "";
+  // No "watch it" marker on the thumbnail. Every craft here is video-first, so flagging the
+  // ones without written steps marks the normal case and reads as noise. The distinction
+  // still gets made where it actually matters — on the detail page, where you opened it
+  // expecting steps and there are none.
   return `<div class="card card-click" data-craft-open="${esc(c.id)}" tabindex="0" role="button">
-    <div class="thumb">${thumbHTML(c.thumbnail)}${silent}${dur}</div>
+    <div class="thumb">${thumbHTML(c.thumbnail)}${dur}</div>
     <div class="card-body">
       <h3 class="card-title">${esc(c.title)}</h3>
       ${craftMatchNote(c,q)}
