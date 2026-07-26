@@ -263,8 +263,12 @@ const S = {
   thumbCache: {},      // path -> data URL (in-memory only)
   url: "",
   note: "",
-  related: "",
+  // Written-recipe links for the video being captured. A LIST, because one post can point
+  // at several: a roundup reel advertising six dishes puts six blog links in its comments,
+  // and each of those becomes its own recipe when it converts. Always at least one row.
+  links: [""],
   lastUrl: "",
+  lastLinks: 0,      // how many recipe links went with it, for the confirmation screen
   updUrl: "",        // "add recipe link" input on the detail page
   updOpen: false,
   delOpen: false,    // "delete this recipe" confirmation on the detail page
@@ -451,27 +455,41 @@ async function openRecipe(id){
   }catch(e){ S.error="Could not open recipe: "+e.message; render(); }
 }
 
+// The inbox filename stem, UTC, matching the CLI's now_stamp(). To the SECOND, not the
+// minute: two captures inside one minute build the same path and the upload then fails with
+// an unexplained "Could not queue" — and "send the video again with the rest of the links",
+// which is how a half-finished capture is fixed, is exactly a same-minute repeat.
+const p2 = n=>String(n).padStart(2,"0");
+function utcStamp(){
+  const t = new Date();
+  return `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
+       + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}${p2(t.getUTCSeconds())}Z`;
+}
+function utcDate(){
+  const t = new Date();
+  return `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
+}
+
 async function submitCapture(){
   const url = S.url.trim();
   if(!url) return;
-  const stamp = new Date().toISOString().replace(/[-:]/g,"").replace(/\.\d+Z$/,"Z").slice(0,15);
-  // YYYYMMDDTHHMMZ  (matches the CLI's inbox filename stem)
-  const t = new Date();
-  const p2 = n=>String(n).padStart(2,"0");
-  const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
-             + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z`;
   const slug = url.replace(/^https?:\/\/(www\.)?/,"").replace(/[^\w]+/g,"-").slice(0,40).replace(/-+$/,"");
-  const path = `inbox/${name}-${slug}.md`;
-  const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
-  const relatedLine = S.related.trim() ? `related: ${S.related.trim()}\n` : "";
-  const body = `---\nurl: ${url}\n${relatedLine}captured: ${captured}\nby: ${deviceKey()}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
+  const path = `inbox/${utcStamp()}-${slug}.md`;
+  // One link stays a bare string; several become the bracketed list the frontmatter parser
+  // on the machine already reads. What happens to them is decided there, not here — the
+  // phone records what it was given and never chooses a processing path.
+  const links = S.links.map(v=>v.trim()).filter(Boolean);
+  const relatedLine = links.length===1 ? `related: ${links[0]}\n`
+                    : links.length ? `related: [${links.join(", ")}]\n` : "";
+  const body = `---\nurl: ${url}\n${relatedLine}captured: ${utcDate()}\nby: ${deviceKey()}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
   try{
     await gh(contentsUrl(path), { method:"PUT", body:JSON.stringify({
       message:`board: queue a link`, content:b64encode(body), branch:CFG.branch }) });
     // Count it locally too, so the confirmation screen reflects the link just added
     // without a second round trip.
     if(S.queueCount!=null) S.queueCount++;
-    S.lastUrl=url; S.url=""; S.note=""; S.related=""; S.screen="captured"; render();
+    S.lastUrl=url; S.lastLinks=links.length;
+    S.url=""; S.note=""; S.links=[""]; S.screen="captured"; render();
   }catch(e){
     S.error = "Could not queue: "+e.message; render();
   }
@@ -864,6 +882,9 @@ function detailView(){
   const seen = r.ingredients.filter(i=>i.seen);
   const raw = r.raw?`<details class="raw"><summary>▸ Raw extraction — ${esc(r.rawLabel)}</summary>
     <pre>${esc(r.raw)}</pre></details>`:"";
+  // A record's source is usually the video, but one written up from a roundup post's blog
+  // link has the page as its source and the video in `related`. The wording follows.
+  const srcIsVideo = isVideoLink(r.source_url);
   return `<div class="header"><div class="wrap"><div class="hrow">
       <button class="btn btn-secondary" data-act="list">${icon("back")}All recipes</button>
     </div></div></div>
@@ -874,13 +895,15 @@ function detailView(){
         r.captured_by?` · sent in by <button class="linkish" data-by="${esc(r.captured_by)}"
           title="Show everything ${esc(r.captured_by)} sent in">${esc(r.captured_by)}</button>`:""} ${tags}</div>
       <a class="btn btn-primary watch" href="${esc(r.source_url)}" target="_blank" rel="noopener">
-        ${icon("ext")}Watch the original</a>
+        ${icon("ext")}${srcIsVideo?"Watch the original":"Read the recipe"}</a>
       ${banner}
       <h2 class="sec">Ingredients</h2><ul class="ings">${ings}</ul>
       <h2 class="sec">Steps</h2><ol class="steps">${steps}</ol>
       ${notes}
       <div class="source-card"><div class="kicker">Source</div>
-        <p style="margin:0 0 8px">The link is the fallback for anything the video showed but never said out loud — keep it.</p>
+        <p style="margin:0 0 8px">${srcIsVideo
+          ?"The link is the fallback for anything the video showed but never said out loud — keep it."
+          :"The link is the written recipe itself — the exact quantities live there."}</p>
         <a href="${esc(r.source_url)}" target="_blank" rel="noopener">${esc(r.source_url)}</a>
         ${seen.length?`<p style="margin:10px 0 0;font-size:13.5px;color:var(--color-accent-2-700)">Visually identified: ${
           seen.map(i=>esc(i.text.split("—")[0].trim())+" ("+esc(i.seen)+")").join(", ")}.</p>`:""}
@@ -921,11 +944,8 @@ function deleteBlock(r){
 
 async function submitDelete(){
   const r = S.recipe;
-  const t = new Date(); const p2 = n=>String(n).padStart(2,"0");
-  const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
-             + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z-delete-${r.id}`;
-  const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
-  const body = `---\nkind: delete\nrecipe: ${r.id}\ncaptured: ${captured}\nby: ${deviceKey()}\nstatus: queued\n---\n\nDelete this recipe (requested from the board).\n`;
+  const name = `${utcStamp()}-delete-${r.id}`;
+  const body = `---\nkind: delete\nrecipe: ${r.id}\ncaptured: ${utcDate()}\nby: ${deviceKey()}\nstatus: queued\n---\n\nDelete this recipe (requested from the board).\n`;
   try{
     await gh(contentsUrl(`inbox/${name}.md`), { method:"PUT", body:JSON.stringify({
       message:`board: request delete for ${r.id}`, content:b64encode(body), branch:CFG.branch }) });
@@ -933,12 +953,27 @@ async function submitDelete(){
   }catch(e){ S.error = "Could not queue the delete: "+e.message; render(); }
 }
 
-// The written-recipe block on a detail page: show the link if the record has one, else
+// Is this link the video the recipe came from, rather than a written recipe? `related` is
+// the other end of the pair and does not always run the same way round: usually it is the
+// written recipe completing a video record, but a recipe fanned out from a roundup post has
+// the blog page as its source and the video as the breadcrumb. Label it by what it points at.
+const VIDEO_HOSTS = ["facebook.com","fb.watch","fb.me","instagram.com","tiktok.com",
+                     "youtube.com","youtu.be"];
+function isVideoLink(u){
+  try{ const h=new URL(u).hostname.toLowerCase(); return VIDEO_HOSTS.some(v=>h.includes(v)); }
+  catch(e){ return false; }
+}
+
+// The written-recipe block on a detail page: show the link(s) if the record has any, else
 // offer to add one. "Add recipe link" queues an update request the next PC run processes.
 function relatedBlock(r){
-  if(r.related){
-    return `<div class="source-card"><div class="kicker">Written recipe</div>
-      <a href="${esc(r.related)}" target="_blank" rel="noopener">${esc(r.related)}</a></div>`;
+  const links = (Array.isArray(r.related) ? r.related : (r.related ? [r.related] : []))
+    .map(String).map(s=>s.trim()).filter(Boolean);
+  if(links.length){
+    const video = links.every(isVideoLink);
+    return `<div class="source-card"><div class="kicker">${video?"From the video":"Written recipe"}</div>
+      ${links.map(l=>`<div style="margin-bottom:6px"><a href="${esc(l)}" target="_blank"
+        rel="noopener">${esc(l)}</a></div>`).join("")}</div>`;
   }
   if(!S.updOpen){
     return `<div class="source-card"><div class="kicker">Written recipe</div>
@@ -961,11 +996,8 @@ async function submitUpdate(){
   const link = S.updUrl.trim();
   if(!link){ return; }
   const r = S.recipe;
-  const t = new Date(); const p2 = n=>String(n).padStart(2,"0");
-  const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
-             + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z-update-${r.id}`;
-  const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
-  const body = `---\nkind: update\nrecipe: ${r.id}\nrelated: ${link}\ncaptured: ${captured}\nby: ${deviceKey()}\nstatus: queued\n---\n\nAdd the written recipe and re-process.\n`;
+  const name = `${utcStamp()}-update-${r.id}`;
+  const body = `---\nkind: update\nrecipe: ${r.id}\nrelated: ${link}\ncaptured: ${utcDate()}\nby: ${deviceKey()}\nstatus: queued\n---\n\nAdd the written recipe and re-process.\n`;
   try{
     await gh(contentsUrl(`inbox/${name}.md`), { method:"PUT", body:JSON.stringify({
       message:`board: request update for ${r.id}`, content:b64encode(body), branch:CFG.branch }) });
@@ -989,9 +1021,18 @@ function captureView(){
       <div class="field"><label>Video link</label>
         <input class="input" id="capurl" type="url" inputmode="url"
           placeholder="https://www.facebook.com/reel/…" value="${esc(S.url)}"></div>
-      <div class="field"><label>Recipe link (optional)</label>
-        <input class="input" id="caprelated" type="url" inputmode="url"
-          placeholder="https://…a written recipe, if you have it" value="${esc(S.related)}"></div>
+      <div class="field">
+        <label>${S.links.length>1?"Recipe links (optional)":"Recipe link (optional)"}</label>
+        ${S.links.map((v,i)=>`<div style="display:flex;gap:8px;margin-bottom:8px">
+          <input class="input" id="caprel${i}" data-rel="${i}" type="url" inputmode="url"
+            placeholder="https://…a written recipe, if you have it" value="${esc(v)}" style="flex:1">
+          ${S.links.length>1?`<button class="btn btn-secondary" data-act="drop-link:${i}"
+            aria-label="Remove this link" style="padding:0 14px">✕</button>`:""}
+        </div>`).join("")}
+        <button class="btn btn-secondary" data-act="add-link">${icon("plus")}Add another link</button>
+        <p class="finetext" style="margin:8px 0 0">If the post shows several recipes and puts a
+          separate link for each in the comments, add them all — each one becomes its own recipe.</p>
+      </div>
       <div class="field"><label>Note (optional)</label>
         <textarea class="input" id="capnote" placeholder="e.g. the one Andrea sent Tuesday">${esc(S.note)}</textarea></div>
       <button class="btn btn-primary btn-block" data-act="do-capture" style="min-height:52px">${icon("plus")}Add to queue</button>
@@ -1005,7 +1046,8 @@ function capturedView(){
     <h1>Queued</h1>
     <p>That link is in line. It'll convert next time you're at a machine — no rush.</p>
     <div class="info-card"><div style="word-break:break-all;margin-bottom:8px">${esc(S.lastUrl)}</div>
-      <span class="tag tag-sage">queued</span>${S.queueCount?`<span class="tag tag-sage">${
+      <span class="tag tag-sage">queued</span>${S.lastLinks?`<span class="tag tag-sage">${
+        S.lastLinks} recipe link${S.lastLinks>1?"s":""}</span>`:""}${S.queueCount?`<span class="tag tag-sage">${
         S.queueCount} waiting</span>`:""}</div>
     <div style="display:flex;gap:10px;justify-content:center;margin-top:8px">
       <button class="btn btn-secondary" data-act="capture">Paste another</button>
@@ -1098,7 +1140,11 @@ function wire(){
   const q=document.getElementById("q");
   if(q) q.oninput=()=>{ S.query=q.value; const g=document.querySelector(".wrap"); repaintList(); };
   const cu=document.getElementById("capurl"); if(cu) cu.oninput=()=>S.url=cu.value;
-  const cr=document.getElementById("caprelated"); if(cr) cr.oninput=()=>S.related=cr.value;
+  // One handler per recipe-link row. Value goes straight to state and does NOT re-render,
+  // so typing never loses the caret.
+  document.querySelectorAll("[data-rel]").forEach(el=>{
+    const i=+el.getAttribute("data-rel"); el.oninput=()=>S.links[i]=el.value;
+  });
   const cn=document.getElementById("capnote"); if(cn) cn.oninput=()=>S.note=cn.value;
   const uu=document.getElementById("updurl"); if(uu) uu.oninput=()=>S.updUrl=uu.value;
 }
@@ -1122,7 +1168,20 @@ function repaintList(){
 }
 
 function act(a){
+  // Removing a recipe-link row carries which row in the action name.
+  if(a.startsWith("drop-link:")){
+    S.links.splice(+a.split(":")[1],1);
+    if(!S.links.length) S.links=[""];
+    render(); return;
+  }
   switch(a){
+    case "add-link": {
+      S.links.push("");
+      render();
+      // Land the caret in the row just added, so a run of links is one tap and typing.
+      const el=document.getElementById("caprel"+(S.links.length-1)); if(el) el.focus();
+      break;
+    }
     case "list":     S.tab="recipes"; S.screen="list"; S.error=""; render(); break;
     case "crafts":   S.tab="crafts"; S.screen="crafts"; S.error=""; render(); break;
     case "tab-recipes": S.tab="recipes"; S.screen="list"; S.error=""; render(); break;
