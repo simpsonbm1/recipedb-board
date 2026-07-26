@@ -105,6 +105,14 @@ textarea.input{min-height:88px; resize:vertical}
 .searchbox .input{padding-left:44px}
 .countline{font-size:13px; text-transform:uppercase; letter-spacing:0.02em;
   color:color-mix(in srgb,var(--color-text) 55%,transparent); margin:14px 2px 12px}
+.queueline{display:inline-flex; align-items:center; gap:7px; font-size:13.5px; font-weight:600;
+  color:var(--color-accent-2-700); background:var(--color-accent-2-100);
+  border-radius:999px; padding:7px 14px; margin:-4px 2px 14px}
+.barlabel{font-size:12.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700;
+  color:color-mix(in srgb,var(--color-text) 45%,transparent); margin-right:1px}
+.peoplebar{margin-top:8px}
+.linkish{font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer;
+  text-decoration:underline; text-underline-offset:2px}
 
 /* ── cards ── */
 .grid{display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr))}
@@ -201,7 +209,24 @@ details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:
    ══════════════════════════════════════════════════════════════════════════ */
 
 const CFG = { owner:"simpsonbm1", repo:"recipedb", branch:"main" };
-const LS  = { tok:"rdb.token" };
+const LS  = { tok:"rdb.token", dev:"rdb.device" };
+
+/* Who is submitting, without ever asking them.
+   Three people share this board and none of them should meet a "your name" field on the
+   way to pasting a link. So this mints an opaque random key per device on first run and
+   stamps it on every queue entry. The key means nothing on its own; it is named once, on
+   the conversion machine, by the one person who knows whose phone is whose
+   (`rdb whois <key> "<name>"`). Deliberately not derived from the token: all three PATs
+   come from one GitHub account and the API cannot tell them apart. */
+function deviceKey(){
+  let k = localStorage.getItem(LS.dev);
+  if(!k){
+    const b = new Uint8Array(6); crypto.getRandomValues(b);
+    k = Array.from(b, x=>x.toString(16).padStart(2,"0")).join("");
+    localStorage.setItem(LS.dev, k);
+  }
+  return k;
+}
 
 const S = {
   screen: "list",
@@ -224,7 +249,8 @@ const S = {
   delQueued: false,  // a delete request has been queued for the current recipe this session
   activeTag: "",     // the tag the list is filtered by ("" = no tag filter)
   tagPanelOpen: false, // the "filter by tag" panel is expanded
-  queueCount: null,
+  activeBy: "",      // the submitter the list is filtered by ("" = everyone)
+  queueCount: null,  // links waiting to convert; null = not known yet
 };
 
 /* ── icons (Lucide paths, stroke 2.5) ── */
@@ -280,6 +306,26 @@ async function getFile(p){
   return { text:b64decode(j.content), sha:j.sha };
 }
 
+/* How many links are waiting to convert.
+
+   The inbox cannot simply be counted: a consumed entry stays in inbox/ on purpose, because
+   scanning those is what makes a re-capture of the same URL dedupe. So `rdb` records in the
+   index how many were pending when it ran and how many files existed then; anything that
+   has appeared since is by definition still waiting. One extra API call, names only, and a
+   capture from any phone shows up immediately rather than after the next conversion run. */
+async function loadQueue(idx){
+  const q = idx.queue;
+  if(!q){ S.queueCount=null; return; }          // an index written before this existed
+  try{
+    const files = await gh(`${contentsUrl("inbox")}?ref=${CFG.branch}&_=${Date.now()}`,
+                           { cache:"no-store" });
+    const now = Array.isArray(files) ? files.filter(f=>f.name.endsWith(".md")).length : 0;
+    S.queueCount = (q.pending||0) + Math.max(0, now - (q.seen||0));
+  }catch{
+    S.queueCount = q.pending || 0;   // fall back to the indexed figure; never block the list
+  }
+}
+
 async function loadIndex(){
   S.loading=true; S.error=""; render();
   try{
@@ -287,6 +333,7 @@ async function loadIndex(){
     const idx = JSON.parse(text);
     S.index = idx.recipes || [];
     S.loading=false; render();
+    loadQueue(idx).then(render);
     prefetchThumbs();
   }catch(e){
     S.loading=false;
@@ -343,10 +390,13 @@ async function submitCapture(){
   const path = `inbox/${name}-${slug}.md`;
   const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
   const relatedLine = S.related.trim() ? `related: ${S.related.trim()}\n` : "";
-  const body = `---\nurl: ${url}\n${relatedLine}captured: ${captured}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
+  const body = `---\nurl: ${url}\n${relatedLine}captured: ${captured}\nby: ${deviceKey()}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
   try{
     await gh(contentsUrl(path), { method:"PUT", body:JSON.stringify({
       message:`board: queue a link`, content:b64encode(body), branch:CFG.branch }) });
+    // Count it locally too, so the confirmation screen reflects the link just added
+    // without a second round trip.
+    if(S.queueCount!=null) S.queueCount++;
     S.lastUrl=url; S.url=""; S.note=""; S.related=""; S.screen="captured"; render();
   }catch(e){
     S.error = "Could not queue: "+e.message; render();
@@ -397,6 +447,9 @@ function parseRecipe(raw, card){
     duration_s:f.duration_s, total_time:f.total_time||card.total_time,
     tags:Array.isArray(f.tags)?f.tags:(card.tags||[]),
     confidence:f.confidence||card.confidence||"medium", thumbnail:card.thumbnail||"",
+    // Resolved on the machine at index time, never stored in the record — the record keeps
+    // the device key, so renaming a phone re-attributes its whole back catalogue.
+    captured_by:card.captured_by||"",
     ingredients, steps, notes:sec.notes||"",
     raw: rawMatch?rawMatch[1].trim():"", rawLabel: rawLabel?rawLabel[1]:"raw extraction",
   };
@@ -417,12 +470,24 @@ function thumbHTML(path, ph=64){
   return `<span class="ph">${icon("utensils",ph)}</span>`;
 }
 
-// Recipes matching the current search text AND the active tag (both optional).
+// Recipes matching the current search text AND the active tag AND the active submitter
+// (all optional).
 function filteredRows(){
   const q=S.query.trim().toLowerCase();
   return S.index.filter(r =>
     (!q || (r.search||"").includes(q)) &&
-    (!S.activeTag || (r.tags||[]).includes(S.activeTag)));
+    (!S.activeTag || (r.tags||[]).includes(S.activeTag)) &&
+    (!S.activeBy || (r.captured_by||"") === S.activeBy));
+}
+// Everyone who has submitted, with a count each. Empty until at least two people have -
+// the filter is pointless when every recipe came from the same person, and unattributed
+// recipes (captured before this existed, or from a phone nobody has named yet) are simply
+// not offered as a filter.
+function submitters(){
+  const c={};
+  for(const r of S.index){ const b=(r.captured_by||"").trim(); if(b) c[b]=(c[b]||0)+1; }
+  const rows=Object.entries(c).sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0]));
+  return rows.length>1 ? rows : [];
 }
 // Every tag in the store with its recipe count, most-used first (then alphabetical).
 function tagCounts(){
@@ -432,11 +497,20 @@ function tagCounts(){
 }
 // The count line reflects whichever filters are active.
 function listCountLine(rows){
-  if(!S.query.trim() && !S.activeTag) return `${S.index.length} recipe${S.index.length===1?"":"s"}`;
+  if(!S.query.trim() && !S.activeTag && !S.activeBy)
+    return `${S.index.length} recipe${S.index.length===1?"":"s"}`;
   const bits=[];
+  if(S.activeBy) bits.push(`from ${esc(S.activeBy)}`);
   if(S.activeTag) bits.push(`tagged “${esc(S.activeTag)}”`);
   if(S.query.trim()) bits.push(`“${esc(S.query.trim())}”`);
   return `${rows.length} recipe${rows.length===1?"":"s"} · ${bits.join(" · ")}`;
+}
+// "3 waiting to convert" — the queue is invisible otherwise, and the number going up is
+// how someone knows their link actually landed.
+function queueLine(){
+  if(!S.queueCount) return "";
+  return `<div class="queueline">${icon("clock",14)}${S.queueCount} link${
+    S.queueCount===1?"":"s"} waiting to convert</div>`;
 }
 
 function listView(){
@@ -456,13 +530,23 @@ function listView(){
   const tagChip = (t,n,extra="") => `<button class="tag tag-btn ${S.activeTag===t?"tag-accent":"tag-sage"}${extra}"
     data-tag="${esc(t)}">${esc(t)}${n!=null?`<span class="tag-count">${n}</span>`:""}</button>`;
 
+  // Submitter chips sit on their own row, and only appear once more than one person has
+  // sent something in. Tapping the active one clears it, same gesture as the tags.
+  const people = submitters();
+  const peoplebar = people.length ? `<div class="filterbar peoplebar">
+    <span class="barlabel">From</span>
+    ${people.map(([b,n])=>`<button class="tag tag-btn ${S.activeBy===b?"tag-accent":"tag-sage"}"
+      data-by="${esc(b)}">${esc(b)}<span class="tag-count">${n}</span></button>`).join("")}
+    </div>` : "";
+
   const filterbar = `<div class="filterbar">
     <button class="filter-toggle${S.tagPanelOpen?" on":""}" data-act="toggle-tags">
       ${icon("filter",15)}${S.tagPanelOpen?"Hide tags":"Filter by tag"}</button>
     ${S.activeTag ? `<button class="tag tag-accent tag-btn" data-tag="${esc(S.activeTag)}"
       title="Clear this filter">${esc(S.activeTag)} ${icon("x",13)}</button>` : ""}
     </div>
-    ${S.tagPanelOpen ? `<div class="tagpanel">${tags.map(([t,n])=>tagChip(t,n)).join("")}</div>` : ""}`;
+    ${S.tagPanelOpen ? `<div class="tagpanel">${tags.map(([t,n])=>tagChip(t,n)).join("")}</div>` : ""}
+    ${peoplebar}`;
 
   return `<div class="header"><div class="wrap">
     <div class="hrow">
@@ -477,6 +561,7 @@ function listView(){
   </div></div>
   <div class="wrap" id="listbody">
     <div class="countline">${listCountLine(rows)}</div>
+    ${queueLine()}
     ${body}
   </div>`;
 }
@@ -491,7 +576,8 @@ function cardHTML(r){
     <div class="thumb">${thumbHTML(r.thumbnail)}${warn}${time}</div>
     <div class="card-body">
       <h3 class="card-title">${esc(r.title)}</h3>
-      <div class="card-stamp">${icon("cal",14)}Added ${esc(shortDate(r.added))||"—"}</div>
+      <div class="card-stamp">${icon("cal",14)}Added ${esc(shortDate(r.added))||"—"}${
+        r.captured_by?` · by ${esc(r.captured_by)}`:""}</div>
       ${tags?`<div class="card-tags">${tags}</div>`:""}
     </div></button>`;
 }
@@ -520,7 +606,9 @@ function detailView(){
     <div class="wrap wrap-detail">
       <div class="hero">${thumbHTML(r.thumbnail,88)}</div>
       <h1 class="d-title">${esc(r.title)}</h1>
-      <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · added ${esc(shortDate(r.added))} ${tags}</div>
+      <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · added ${esc(shortDate(r.added))}${
+        r.captured_by?` · sent in by <button class="linkish" data-by="${esc(r.captured_by)}"
+          title="Show everything ${esc(r.captured_by)} sent in">${esc(r.captured_by)}</button>`:""} ${tags}</div>
       <a class="btn btn-primary watch" href="${esc(r.source_url)}" target="_blank" rel="noopener">
         ${icon("ext")}Watch the original</a>
       ${banner}
@@ -573,7 +661,7 @@ async function submitDelete(){
   const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
              + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z-delete-${r.id}`;
   const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
-  const body = `---\nkind: delete\nrecipe: ${r.id}\ncaptured: ${captured}\nstatus: queued\n---\n\nDelete this recipe (requested from the board).\n`;
+  const body = `---\nkind: delete\nrecipe: ${r.id}\ncaptured: ${captured}\nby: ${deviceKey()}\nstatus: queued\n---\n\nDelete this recipe (requested from the board).\n`;
   try{
     await gh(contentsUrl(`inbox/${name}.md`), { method:"PUT", body:JSON.stringify({
       message:`board: request delete for ${r.id}`, content:b64encode(body), branch:CFG.branch }) });
@@ -613,7 +701,7 @@ async function submitUpdate(){
   const name = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}T`
              + `${p2(t.getUTCHours())}${p2(t.getUTCMinutes())}Z-update-${r.id}`;
   const captured = `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
-  const body = `---\nkind: update\nrecipe: ${r.id}\nrelated: ${link}\ncaptured: ${captured}\nstatus: queued\n---\n\nAdd the written recipe and re-process.\n`;
+  const body = `---\nkind: update\nrecipe: ${r.id}\nrelated: ${link}\ncaptured: ${captured}\nby: ${deviceKey()}\nstatus: queued\n---\n\nAdd the written recipe and re-process.\n`;
   try{
     await gh(contentsUrl(`inbox/${name}.md`), { method:"PUT", body:JSON.stringify({
       message:`board: request update for ${r.id}`, content:b64encode(body), branch:CFG.branch }) });
@@ -653,7 +741,8 @@ function capturedView(){
     <h1>Queued</h1>
     <p>That link is in line. It'll convert next time you're at a machine — no rush.</p>
     <div class="info-card"><div style="word-break:break-all;margin-bottom:8px">${esc(S.lastUrl)}</div>
-      <span class="tag tag-sage">queued</span></div>
+      <span class="tag tag-sage">queued</span>${S.queueCount?`<span class="tag tag-sage">${
+        S.queueCount} waiting</span>`:""}</div>
     <div style="display:flex;gap:10px;justify-content:center;margin-top:8px">
       <button class="btn btn-secondary" data-act="capture">Paste another</button>
       <button class="btn btn-primary" data-act="list">Back to recipes</button>
@@ -718,6 +807,11 @@ function wire(){
     el.onclick=(e)=>{ e.stopPropagation(); const t=el.getAttribute("data-tag");
       S.activeTag = (S.activeTag===t ? "" : t); S.tagPanelOpen=false; S.screen="list"; render(); };
   });
+  // Submitter chips, same toggle gesture as the tags.
+  document.querySelectorAll("[data-by]").forEach(el=>{
+    el.onclick=(e)=>{ e.stopPropagation(); const b=el.getAttribute("data-by");
+      S.activeBy = (S.activeBy===b ? "" : b); S.screen="list"; render(); };
+  });
   const q=document.getElementById("q");
   if(q) q.oninput=()=>{ S.query=q.value; const g=document.querySelector(".wrap"); repaintList(); };
   const cu=document.getElementById("capurl"); if(cu) cu.oninput=()=>S.url=cu.value;
@@ -736,7 +830,7 @@ function repaintList(){
     ? `<div class="grid">${rows.map(cardHTML).join("")}</div>`
     : `<div class="empty"><div class="l1">Nothing matches that yet.</div>
        <div>Try a single ingredient, or a different tag — the corpus is small and personal.</div></div>`;
-  wrap.innerHTML=`<div class="countline">${listCountLine(rows)}</div>${grid}`;
+  wrap.innerHTML=`<div class="countline">${listCountLine(rows)}</div>${queueLine()}${grid}`;
   wrap.querySelectorAll("[data-open]").forEach(el=>el.onclick=()=>openRecipe(el.getAttribute("data-open")));
   // reattach thumbnails already in memory
   rows.forEach(r=>{ if(r.thumbnail&&S.thumbCache[r.thumbnail]){
