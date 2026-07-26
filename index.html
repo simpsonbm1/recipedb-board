@@ -105,6 +105,28 @@ textarea.input{min-height:88px; resize:vertical}
 .searchbox .input{padding-left:44px}
 .countline{font-size:13px; text-transform:uppercase; letter-spacing:0.02em;
   color:color-mix(in srgb,var(--color-text) 55%,transparent); margin:14px 2px 12px}
+/* ── crafts: the second section ── */
+.tabs{display:inline-flex; background:var(--color-surface); border-radius:999px; padding:4px; gap:2px}
+.tab{border:none; background:transparent; border-radius:999px; padding:8px 16px; font-size:14.5px;
+  font-weight:600; cursor:pointer; font-family:inherit;
+  color:color-mix(in srgb,var(--color-text) 62%,transparent)}
+.tab.on{background:var(--color-bg); color:var(--color-text); box-shadow:var(--shadow-sm)}
+/* The whole card opens the entry, so it needs the affordances a <button> gave the
+   recipe cards. */
+.card-click{cursor:pointer; transition:box-shadow .12s, transform .12s}
+.card-click:hover{box-shadow:var(--shadow-md); transform:translateY(-1px)}
+.card-click:focus-visible{outline:2px solid var(--color-accent); outline-offset:2px}
+.card-foot{margin-top:2px}
+.btn-sm{padding:7px 14px; font-size:13.5px}
+.tag-plain{background:color-mix(in srgb,var(--color-text) 8%,transparent);
+  color:color-mix(in srgb,var(--color-text) 68%,transparent)}
+/* A result with no visible reason for being in the list reads as a broken search. */
+.matched{font-size:12px; font-weight:600; color:var(--color-accent-700); align-self:flex-start;
+  background:var(--color-accent-100); border-radius:999px; padding:3px 10px}
+/* Reels are portrait; a full-bleed hero would push the title and Watch off the screen. */
+.hero-craft{max-height:210px; overflow:hidden; display:flex; align-items:center; justify-content:center}
+.hero-craft img{width:100%; height:210px; object-fit:cover; object-position:center 35%}
+
 .queueline{display:inline-flex; align-items:center; gap:7px; font-size:13.5px; font-weight:600;
   color:var(--color-accent-2-700); background:var(--color-accent-2-100);
   border-radius:999px; padding:7px 14px; margin:-4px 2px 14px}
@@ -251,6 +273,22 @@ const S = {
   tagPanelOpen: false, // the "filter by tag" panel is expanded
   activeBy: "",      // the submitter the list is filtered by ("" = everyone)
   queueCount: null,  // links waiting to convert; null = not known yet
+
+  /* ── crafts: the second section ──────────────────────────────────────────
+     Sewing, quilting and jewellery technique videos. NOT recipes with materials
+     instead of ingredients — measured against eleven real ones, they are techniques
+     ("how do I finish a strap end"), with no materials list and often no method at
+     all. Seven of eleven are silent, so the video carries the content and the record
+     exists to find it again. Its list loads from a SEPARATE crafts/index.json,
+     fetched only when this tab is first opened, so the recipes path stays one fetch. */
+  tab: "recipes",     // "recipes" | "crafts"
+  crafts: [],
+  craftsLoaded: false,
+  craftQuery: "",
+  activeCraft: "",    // craft-type filter (Sewing/Quilting/...), "" = all
+  craftBy: "",        // submitter filter on the crafts tab
+  currentCraft: null,
+  craftCache: {},
 };
 
 /* ── icons (Lucide paths, stroke 2.5) ── */
@@ -343,6 +381,42 @@ async function loadIndex(){
             : "Load failed: "+e.message;
     render();
   }
+}
+
+// Lazy: only paid for when the Crafts tab is actually opened.
+async function loadCrafts(){
+  if(S.craftsLoaded) return;
+  S.loading=true; S.error=""; render();
+  try{
+    const { text } = await getFile("crafts/index.json");
+    S.crafts = JSON.parse(text).crafts || [];
+    S.craftsLoaded = true; S.loading=false; render();
+    for(const c of S.crafts){
+      if(c.thumbnail && !(c.thumbnail in S.thumbCache)){
+        await loadThumb(c.thumbnail);
+        const el = document.querySelector(`[data-thumb="${CSS.escape(c.thumbnail)}"]`);
+        if(el && S.thumbCache[c.thumbnail]) el.outerHTML =
+          `<img src="${S.thumbCache[c.thumbnail]}" alt="">`;
+      }
+    }
+  }catch(e){
+    S.loading=false;
+    S.error = e.status===404
+      ? "No crafts yet — nothing has been converted into the crafts store."
+      : "Could not load crafts: "+e.message;
+    render();
+  }
+}
+
+async function openCraft(id){
+  S.currentCraft = S.crafts.find(c=>c.id===id) || null;
+  S.screen="craft-detail"; S.error=""; window.scrollTo(0,0); render();
+  if(S.craftCache[id]){ render(); return; }
+  try{
+    const { text } = await getFile(S.currentCraft.file);
+    S.craftCache[id] = parseCraft(text);
+    render();
+  }catch(e){ S.error="Could not open it: "+e.message; render(); }
 }
 
 async function loadThumb(path){
@@ -455,7 +529,51 @@ function parseRecipe(raw, card){
   };
 }
 
+/* A craft record: same frontmatter parser, different sections. No ingredients, no
+   servings; instead a method that is often absent, tools, and the words burnt into the
+   video — which is regularly the only place the word someone searches for exists. */
+function parseCraft(raw){
+  raw = String(raw).replace(/^﻿/, "");
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  const f={}; let body="";
+  if(m){
+    m[1].split(/\r?\n/).forEach(line=>{
+      const kv = line.match(/^([A-Za-z_]+):\s*(.*)$/); if(!kv) return;
+      let v=kv[2].trim();
+      if(/^\[.*\]$/.test(v)){ const inner=v.slice(1,-1).trim();
+        v = inner?inner.split(",").map(x=>x.trim().replace(/^["']|["']$/g,"")).filter(Boolean):[]; }
+      else v=v.replace(/^["']|["']$/g,"");
+      f[kv[1]]=v;
+    });
+    body=m[2]||"";
+  }
+  const sec={}; let cur=null, buf=[];
+  body.split(/\r?\n/).forEach(line=>{
+    const h=line.match(/^##\s+(.*)$/);
+    if(h){ if(cur) sec[cur]=buf.join("\n").trim(); cur=h[1].trim().toLowerCase(); buf=[]; }
+    else if(cur!==null) buf.push(line);
+  });
+  if(cur) sec[cur]=buf.join("\n").trim();
+
+  const method = (sec.method||"").split(/\r?\n/).map(l=>l.match(/^\d+\.\s+(.*)$/))
+    .filter(Boolean).map(x=>x[1].trim());
+  const tools = (sec.tools||"").split(/\r?\n/).map(l=>l.match(/^-\s+(.*)$/))
+    .filter(Boolean).map(x=>x[1].trim());
+  // Drop the italic footnote the CLI writes under the words-on-screen block.
+  const screen = (sec["words on screen"]||"").split(/\r?\n/)
+    .filter(l=>l.trim() && !/^_.*_$/.test(l.trim())).join(" ").trim();
+  const rawMatch = (sec["raw extraction"]||"").match(/```([\s\S]*?)```/);
+  const rawLabel = (sec["raw extraction"]||"").match(/<summary>(.*?)<\/summary>/);
+  return {
+    method, tools, screen,
+    silent: !method.length,
+    raw: rawMatch?rawMatch[1].trim():"", rawLabel: rawLabel?rawLabel[1]:"raw extraction",
+  };
+}
+
 /* ── date helper ── */
+function mmss(s){ const n=Math.round(parseFloat(s)||0);
+  return `${Math.floor(n/60)}:${String(n%60).padStart(2,"0")}`; }
 function shortDate(iso){
   if(!iso) return "";
   const m=String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); if(!m) return iso;
@@ -551,6 +669,7 @@ function listView(){
   return `<div class="header"><div class="wrap">
     <div class="hrow">
       <span class="brand">recipedb</span>
+      ${tabsHTML()}
       <button class="btn btn-secondary btn-icon" data-act="setup" title="Connect">${icon("key")}</button>
       <button class="btn btn-primary" data-act="capture">${icon("plus")}Paste link</button>
     </div>
@@ -564,6 +683,148 @@ function listView(){
     ${queueLine()}
     ${body}
   </div>`;
+}
+
+/* ══ crafts ══ */
+// The tab strip. Lives on both list screens so the two sections are one app.
+function tabsHTML(){
+  return `<div class="tabs">
+    <button class="tab${S.tab==="recipes"?" on":""}" data-act="tab-recipes">Recipes</button>
+    <button class="tab${S.tab==="crafts"?" on":""}" data-act="tab-crafts">Crafts</button>
+  </div>`;
+}
+function craftRows(){
+  const q=S.craftQuery.trim().toLowerCase();
+  return S.crafts.filter(c =>
+    (!q || (c.search||"").includes(q)) &&
+    (!S.activeCraft || c.craft===S.activeCraft) &&
+    (!S.craftBy || (c.captured_by||"")===S.craftBy));
+}
+function craftTypeCounts(){
+  const c={}; for(const r of S.crafts) if(r.craft) c[r.craft]=(c[r.craft]||0)+1;
+  return Object.entries(c).sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0]));
+}
+function craftSubmitters(){
+  const c={}; for(const r of S.crafts){ const b=(r.captured_by||"").trim(); if(b) c[b]=(c[b]||0)+1; }
+  const rows=Object.entries(c).sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0]));
+  return rows.length>1 ? rows : [];
+}
+// A result you cannot see the reason for reads as a broken search, so when the hit is not
+// in the title, say where it was.
+function craftMatchNote(c,q){
+  if(!q || (c.title||"").toLowerCase().includes(q)) return "";
+  const where=[["text on screen", c.screen_text||""], ["tools",(c.tools||[]).join(" ")],
+               ["tags",(c.tags||[]).join(" ")], ["the craft",c.craft||""],
+               ["the creator",c.uploader||""]]
+    .find(([,t])=>t.toLowerCase().includes(q));
+  return `<div class="matched">matched in ${where?where[0]:"the method"}</div>`;
+}
+function craftCardHTML(c){
+  const q=S.craftQuery.trim().toLowerCase();
+  const dur = c.duration_s ? `<span class="chip-time">${icon("clock",13)}${mmss(c.duration_s)}</span>` : "";
+  const silent = !c.has_method ? `<span class="chip-warn">${icon("eye",13)}Watch it</span>` : "";
+  return `<div class="card card-click" data-craft-open="${esc(c.id)}" tabindex="0" role="button">
+    <div class="thumb">${thumbHTML(c.thumbnail)}${silent}${dur}</div>
+    <div class="card-body">
+      <h3 class="card-title">${esc(c.title)}</h3>
+      ${craftMatchNote(c,q)}
+      <div class="card-stamp">${icon("cal",14)}Added ${esc(shortDate(c.added))||"—"}${
+        c.captured_by?` · by ${esc(c.captured_by)}`:""}</div>
+      <div class="card-tags"><span class="tag tag-sage">${esc(c.craft)}</span>${
+        (c.tags||[]).slice(0,3).map(t=>`<span class="tag tag-plain">${esc(t)}</span>`).join("")}</div>
+      <div class="card-foot">
+        <a class="btn btn-primary btn-sm" href="${esc(c.source_url)}" target="_blank"
+           rel="noopener" data-stop>${icon("ext",14)}Watch</a>
+      </div>
+    </div></div>`;
+}
+function craftsView(){
+  const rows=craftRows(), types=craftTypeCounts(), people=craftSubmitters();
+  let body;
+  if(S.loading) body=`<div class="spin">Loading…</div>`;
+  else if(S.error) body=`<div class="err">${esc(S.error)}</div>`;
+  else if(!rows.length && (S.craftQuery.trim()||S.activeCraft||S.craftBy)) body=`<div class="empty">
+    <div class="l1">Nothing matches that.</div>
+    <div>Try what the problem was, not what the video was called — “bobbin”, “zipper”, “knot”.</div></div>`;
+  else if(!rows.length) body=`<div class="empty"><div class="l1">No crafts yet.</div>
+    <div>Queue a sewing or craft video and it'll land here once it's converted.</div></div>`;
+  else body=`<div class="grid">${rows.map(craftCardHTML).join("")}</div>`;
+
+  const chip=(label,val,n)=>`<button class="tag tag-btn ${S.activeCraft===val?"tag-accent":"tag-sage"}"
+    data-crafttype="${esc(val)}">${esc(label)}${n!=null?`<span class="tag-count">${n}</span>`:""}</button>`;
+
+  return `<div class="header"><div class="wrap">
+    <div class="hrow">
+      <span class="brand">recipedb</span>
+      ${tabsHTML()}
+      <button class="btn btn-secondary btn-icon" data-act="setup" title="Connect">${icon("key")}</button>
+      <button class="btn btn-primary" data-act="capture">${icon("plus")}Paste link</button>
+    </div>
+    <div class="searchbox"><span class="ic">${icon("search",18)}</span>
+      <input class="input" id="cq" placeholder="What were you trying to do?"
+        value="${esc(S.craftQuery)}" autocomplete="off"></div>
+    ${S.crafts.length?`<div class="filterbar">${chip("All","",S.crafts.length)}${
+      types.map(([t,n])=>chip(t,t,n)).join("")}</div>`:""}
+    ${people.length?`<div class="filterbar peoplebar"><span class="barlabel">From</span>${
+      people.map(([b,n])=>`<button class="tag tag-btn ${S.craftBy===b?"tag-accent":"tag-sage"}"
+        data-craftby="${esc(b)}">${esc(b)}<span class="tag-count">${n}</span></button>`).join("")
+      }</div>`:""}
+  </div></div>
+  <div class="wrap" id="craftbody">
+    <div class="countline">${rows.length} craft${rows.length===1?"":"s"}${
+      S.activeCraft?` · ${esc(S.activeCraft)}`:""}${S.craftBy?` · from ${esc(S.craftBy)}`:""}${
+      S.craftQuery.trim()?` · “${esc(S.craftQuery.trim())}”`:""}</div>
+    ${queueLine()}
+    ${body}
+  </div>`;
+}
+
+function craftDetailView(){
+  const c=S.currentCraft, d=S.craftCache[c?.id];
+  if(!c) return `<div class="wrap"><div class="err">Not found.</div></div>`;
+  const back=`<div class="header"><div class="wrap"><div class="hrow">
+      <button class="btn btn-secondary" data-act="crafts">${icon("back")}All crafts</button>
+    </div></div></div>`;
+  if(!d) return back+`<div class="spin">Opening…</div>`;
+  const method = d.method.length
+    ? `<h2 class="sec">Method</h2><ol class="steps">${
+        d.method.map(s=>`<li><span class="num"></span><span>${esc(s)}</span></li>`)
+          .map((h,i)=>h.replace('class="num">','class="num">'+(i+1))).join("")}</ol>`
+    : `<div class="source-card"><div class="kicker">${icon("eye",13)} The video is the method</div>
+       <p style="margin:0;font-size:14.5px">Nothing was said out loud and nothing was written on
+       screen — this one is a demonstration. The record's job is to get you back to it, and it's
+       ${esc(mmss(c.duration_s))} long.</p></div>`;
+  const tools = d.tools.length
+    ? `<h2 class="sec">Tools</h2><ul class="ings">${
+        d.tools.map(t=>`<li><span class="dot"></span><span>${esc(t)}</span></li>`).join("")}</ul>`
+    : "";
+  const screen = d.screen
+    ? `<div class="source-card"><div class="kicker">${icon("eye",13)} Words on screen</div>
+       <p style="margin:0 0 8px;font-size:14.5px">${esc(d.screen)}</p>
+       <p style="margin:0;font-size:13px;color:color-mix(in srgb,var(--color-text) 60%,transparent)">
+       Read from the video frames — often the only place the word you'd search for exists.</p></div>`
+    : "";
+  const pattern = c.pattern
+    ? `<div class="source-card"><div class="kicker">Pattern</div>
+       <a href="${esc(c.pattern)}" target="_blank" rel="noopener">${esc(c.pattern)}</a>
+       ${c.pattern_paid?`<p style="margin:8px 0 0;font-size:13.5px">Behind a purchase — the
+       cutting list isn't stored here.</p>`:""}</div>`
+    : "";
+  const raw = d.raw?`<details class="raw"><summary>▸ Raw extraction — ${esc(d.rawLabel)}</summary>
+    <pre>${esc(d.raw)}</pre></details>`:"";
+  return back+`<div class="wrap wrap-detail">
+      <div class="hero hero-craft">${thumbHTML(c.thumbnail,88)}</div>
+      <h1 class="d-title">${esc(c.title)}</h1>
+      <div class="d-meta">${esc(c.craft)} · ${esc(c.uploader||c.site)} · added ${
+        esc(shortDate(c.added))}${c.captured_by?` · by ${esc(c.captured_by)}`:""}</div>
+      <a class="btn btn-primary watch" href="${esc(c.source_url)}" target="_blank" rel="noopener">
+        ${icon("ext")}Watch the original</a>
+      ${method}
+      ${tools}
+      ${screen}
+      ${pattern}
+      ${raw}
+    </div>`;
 }
 
 function cardHTML(r){
@@ -784,6 +1045,8 @@ function render(){
   if(!S.token && S.screen!=="setup") S.screen="setup";
   let html;
   switch(S.screen){
+    case "crafts":       html=craftsView(); break;
+    case "craft-detail": html=craftDetailView(); break;
     case "detail":   html=detailView(); break;
     case "capture":  html=captureView(); break;
     case "captured": html=capturedView(); break;
@@ -812,6 +1075,23 @@ function wire(){
     el.onclick=(e)=>{ e.stopPropagation(); const b=el.getAttribute("data-by");
       S.activeBy = (S.activeBy===b ? "" : b); S.screen="list"; render(); };
   });
+  // Crafts: the whole card opens the entry (Watch stops the click, so it stays one tap).
+  document.querySelectorAll("[data-stop]").forEach(el=>el.onclick=e=>e.stopPropagation());
+  document.querySelectorAll("[data-craft-open]").forEach(el=>{
+    const open=()=>openCraft(el.getAttribute("data-craft-open"));
+    el.onclick=open;
+    el.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); open(); } };
+  });
+  document.querySelectorAll("[data-crafttype]").forEach(el=>el.onclick=e=>{
+    e.stopPropagation(); const v=el.getAttribute("data-crafttype");
+    S.activeCraft=(S.activeCraft===v?"":v); render(); });
+  document.querySelectorAll("[data-craftby]").forEach(el=>el.onclick=e=>{
+    e.stopPropagation(); const v=el.getAttribute("data-craftby");
+    S.craftBy=(S.craftBy===v?"":v); render(); });
+  const cq=document.getElementById("cq");
+  if(cq) cq.oninput=()=>{ const pos=cq.selectionStart; S.craftQuery=cq.value; render();
+    const el=document.getElementById("cq"); if(el){ el.focus(); el.setSelectionRange(pos,pos); } };
+
   const q=document.getElementById("q");
   if(q) q.oninput=()=>{ S.query=q.value; const g=document.querySelector(".wrap"); repaintList(); };
   const cu=document.getElementById("capurl"); if(cu) cu.oninput=()=>S.url=cu.value;
@@ -840,7 +1120,11 @@ function repaintList(){
 
 function act(a){
   switch(a){
-    case "list":     S.screen="list"; S.error=""; render(); break;
+    case "list":     S.tab="recipes"; S.screen="list"; S.error=""; render(); break;
+    case "crafts":   S.tab="crafts"; S.screen="crafts"; S.error=""; render(); break;
+    case "tab-recipes": S.tab="recipes"; S.screen="list"; S.error=""; render(); break;
+    case "tab-crafts":  S.tab="crafts"; S.screen="crafts"; S.error="";
+                        if(!S.craftsLoaded) loadCrafts(); else render(); break;
     case "toggle-tags": S.tagPanelOpen=!S.tagPanelOpen; render(); break;
     case "capture":  S.screen="capture"; S.error=""; render(); break;
     case "setup":    S.screen="setup"; S.error=""; render(); break;
