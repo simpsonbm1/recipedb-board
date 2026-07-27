@@ -263,14 +263,22 @@ const S = {
   thumbCache: {},      // path -> data URL (in-memory only)
   url: "",
   note: "",
+  // A recipe typed straight into the post's comments, pasted here. Not a link: plenty of
+  // creators write the whole thing out in a comment, and that text is unfetchable later —
+  // it needs a logged-in session, and this class of post gets deleted. Pasting it at the
+  // moment somebody is already reading it is the only reliable way to keep it.
+  text: "",
   // Written-recipe links for the video being captured. A LIST, because one post can point
   // at several: a roundup reel advertising six dishes puts six blog links in its comments,
   // and each of those becomes its own recipe when it converts. Always at least one row.
   links: [""],
   lastUrl: "",
   lastLinks: 0,      // how many recipe links went with it, for the confirmation screen
-  updUrl: "",        // "add recipe link" input on the detail page
+  lastText: false,   // …and whether a pasted recipe went with it
+  updUrl: "",        // "add the recipe" link input on the detail page
+  updText: "",       // …and the pasted-text box beside it. Either alone is enough.
   updOpen: false,
+  updQueued: false,  // an update request has been queued for the current recipe this session
   delOpen: false,    // "delete this recipe" confirmation on the detail page
   delQueued: false,  // a delete request has been queued for the current recipe this session
   activeTag: "",     // the tag the list is filtered by ("" = no tag filter)
@@ -443,7 +451,8 @@ async function prefetchThumbs(){
 }
 
 async function openRecipe(id){
-  S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.delOpen=false; S.delQueued=false; S.error=""; render();
+  S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.updText="";
+  S.updQueued=false; S.delOpen=false; S.delQueued=false; S.error=""; render();
   if(S.recipeCache[id]){ S.recipe=S.recipeCache[id]; render(); return; }
   const card = S.index.find(r=>r.id===id);
   try{
@@ -470,6 +479,17 @@ function utcDate(){
   return `${t.getUTCFullYear()}-${p2(t.getUTCMonth()+1)}-${p2(t.getUTCDate())}`;
 }
 
+// The body of a queue entry: the submitter's note, then the pasted recipe under a heading the
+// CLI splits on. Frontmatter is one line per key and cannot hold multi-line text, so the body
+// is the only place it can go, and the heading is what tells a recipe apart from a note. An
+// entry with no pasted text keeps exactly the shape it had before this existed.
+function noteBody(note, text){
+  const parts = [];
+  if(note.trim()) parts.push(note.trim());
+  if(text.trim()) parts.push(`## Recipe text\n\n${text.trim()}`);
+  return parts.join("\n\n") + "\n";
+}
+
 async function submitCapture(){
   const url = S.url.trim();
   if(!url) return;
@@ -481,15 +501,15 @@ async function submitCapture(){
   const links = S.links.map(v=>v.trim()).filter(Boolean);
   const relatedLine = links.length===1 ? `related: ${links[0]}\n`
                     : links.length ? `related: [${links.join(", ")}]\n` : "";
-  const body = `---\nurl: ${url}\n${relatedLine}captured: ${utcDate()}\nby: ${deviceKey()}\nstatus: queued\n---\n\n${S.note.trim()}\n`;
+  const body = `---\nurl: ${url}\n${relatedLine}captured: ${utcDate()}\nby: ${deviceKey()}\nstatus: queued\n---\n\n${noteBody(S.note, S.text)}`;
   try{
     await gh(contentsUrl(path), { method:"PUT", body:JSON.stringify({
       message:`board: queue a link`, content:b64encode(body), branch:CFG.branch }) });
     // Count it locally too, so the confirmation screen reflects the link just added
     // without a second round trip.
     if(S.queueCount!=null) S.queueCount++;
-    S.lastUrl=url; S.lastLinks=links.length;
-    S.url=""; S.note=""; S.links=[""]; S.screen="captured"; render();
+    S.lastUrl=url; S.lastLinks=links.length; S.lastText=!!S.text.trim();
+    S.url=""; S.note=""; S.text=""; S.links=[""]; S.screen="captured"; render();
   }catch(e){
     S.error = "Could not queue: "+e.message; render();
   }
@@ -965,10 +985,18 @@ function isVideoLink(u){
 }
 
 // The written-recipe block on a detail page: show the link(s) if the record has any, else
-// offer to add one. "Add recipe link" queues an update request the next PC run processes.
+// offer to add one. "Add the recipe" queues an update request the next PC run processes —
+// carrying a link, or the recipe text pasted straight off the post, or both.
 function relatedBlock(r){
   const links = (Array.isArray(r.related) ? r.related : (r.related ? [r.related] : []))
     .map(String).map(s=>s.trim()).filter(Boolean);
+  // Queued this session: say so rather than falling back to the "add one" prompt, which would
+  // read as though nothing happened and invite a duplicate request.
+  if(S.updQueued){
+    return `<div class="source-card"><div class="kicker">Written recipe</div>
+      <p style="margin:0;font-size:14px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">
+        Queued. It gets added to this recipe the next time conversion runs.</p></div>`;
+  }
   if(links.length){
     const video = links.every(isVideoLink);
     return `<div class="source-card"><div class="kicker">${video?"From the video":"Written recipe"}</div>
@@ -980,12 +1008,18 @@ function relatedBlock(r){
       <p style="margin:0 0 10px;font-size:14px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">
         Found the full recipe in the comments or a blog link? Add it and this recipe gets
         re-processed with it the next time conversion runs.</p>
-      <button class="btn btn-secondary" data-act="open-upd">${icon("plus")}Add recipe link</button></div>`;
+      <button class="btn btn-secondary" data-act="open-upd">${icon("plus")}Add the recipe</button></div>`;
   }
-  return `<div class="source-card"><div class="kicker">Add recipe link</div>
+  // A link and a box for pasted text. Either one alone is enough — a recipe typed into a
+  // comment has no link to give, and that is the common case this exists for.
+  return `<div class="source-card"><div class="kicker">Add the recipe</div>
     ${S.error?`<div class="err">${esc(S.error)}</div>`:""}
     <input class="input" id="updurl" type="url" inputmode="url"
       placeholder="https://…the written recipe" value="${esc(S.updUrl)}" style="margin-bottom:10px">
+    <textarea class="input" id="updtext" rows="6" style="margin-bottom:4px"
+      placeholder="…or paste the recipe text, if it's written out in a comment">${esc(S.updText)}</textarea>
+    <p class="finetext" style="margin:0 0 10px">Either one is enough. Pasted text is used
+      exactly as written.</p>
     <div style="display:flex;gap:10px">
       <button class="btn btn-secondary" data-act="cancel-upd">Cancel</button>
       <button class="btn btn-primary" data-act="do-upd">${icon("check")}Queue update</button>
@@ -994,17 +1028,24 @@ function relatedBlock(r){
 
 async function submitUpdate(){
   const link = S.updUrl.trim();
-  if(!link){ return; }
+  const text = S.updText.trim();
+  // Either one on its own is a complete request. A recipe typed into a comment has no link.
+  if(!link && !text){ return; }
   const r = S.recipe;
   const name = `${utcStamp()}-update-${r.id}`;
-  const body = `---\nkind: update\nrecipe: ${r.id}\nrelated: ${link}\ncaptured: ${utcDate()}\nby: ${deviceKey()}\nstatus: queued\n---\n\nAdd the written recipe and re-process.\n`;
+  const relatedLine = link ? `related: ${link}\n` : "";
+  const body = `---\nkind: update\nrecipe: ${r.id}\n${relatedLine}captured: ${utcDate()}\nby: ${
+    deviceKey()}\nstatus: queued\n---\n\n${noteBody("Add the written recipe and re-process.", text)}`;
   try{
     await gh(contentsUrl(`inbox/${name}.md`), { method:"PUT", body:JSON.stringify({
       message:`board: request update for ${r.id}`, content:b64encode(body), branch:CFG.branch }) });
-    // Reflect it locally so the button doesn't invite a duplicate request this session.
-    S.recipe = Object.assign({}, r, {related: link});
-    S.recipeCache[r.id] = S.recipe;
-    S.updOpen=false; S.updUrl=""; S.error=""; render();
+    // Reflect a link locally so it survives the cache; the queued notice covers both cases
+    // and is what stops the block inviting a duplicate request this session.
+    if(link){
+      S.recipe = Object.assign({}, r, {related: link});
+      S.recipeCache[r.id] = S.recipe;
+    }
+    S.updOpen=false; S.updQueued=true; S.updUrl=""; S.updText=""; S.error=""; render();
   }catch(e){ S.error = "Could not queue the update: "+e.message; render(); }
 }
 
@@ -1033,6 +1074,13 @@ function captureView(){
         <p class="finetext" style="margin:8px 0 0">If the post shows several recipes and puts a
           separate link for each in the comments, add them all — each one becomes its own recipe.</p>
       </div>
+      <div class="field"><label>Recipe text (optional)</label>
+        <textarea class="input" id="captext" rows="6"
+          placeholder="Paste the recipe here if it's written out in a comment">${esc(S.text)}</textarea>
+        <p class="finetext" style="margin:8px 0 0">If the recipe is typed into a comment rather
+          than linked, paste it here — comments can't be read later, and posts like this get
+          deleted. Anything you paste is used exactly as written.</p>
+      </div>
       <div class="field"><label>Note (optional)</label>
         <textarea class="input" id="capnote" placeholder="e.g. the one Andrea sent Tuesday">${esc(S.note)}</textarea></div>
       <button class="btn btn-primary btn-block" data-act="do-capture" style="min-height:52px">${icon("plus")}Add to queue</button>
@@ -1047,7 +1095,8 @@ function capturedView(){
     <p>That link is in line. It'll convert next time you're at a machine — no rush.</p>
     <div class="info-card"><div style="word-break:break-all;margin-bottom:8px">${esc(S.lastUrl)}</div>
       <span class="tag tag-sage">queued</span>${S.lastLinks?`<span class="tag tag-sage">${
-        S.lastLinks} recipe link${S.lastLinks>1?"s":""}</span>`:""}${S.queueCount?`<span class="tag tag-sage">${
+        S.lastLinks} recipe link${S.lastLinks>1?"s":""}</span>`:""}${S.lastText?`<span
+        class="tag tag-sage">recipe text</span>`:""}${S.queueCount?`<span class="tag tag-sage">${
         S.queueCount} waiting</span>`:""}</div>
     <div style="display:flex;gap:10px;justify-content:center;margin-top:8px">
       <button class="btn btn-secondary" data-act="capture">Paste another</button>
@@ -1146,7 +1195,9 @@ function wire(){
     const i=+el.getAttribute("data-rel"); el.oninput=()=>S.links[i]=el.value;
   });
   const cn=document.getElementById("capnote"); if(cn) cn.oninput=()=>S.note=cn.value;
+  const ct=document.getElementById("captext"); if(ct) ct.oninput=()=>S.text=ct.value;
   const uu=document.getElementById("updurl"); if(uu) uu.oninput=()=>S.updUrl=uu.value;
+  const ut=document.getElementById("updtext"); if(ut) ut.oninput=()=>S.updText=ut.value;
 }
 
 // Live search without losing input focus: repaint only the count + grid (respecting the
@@ -1192,7 +1243,7 @@ function act(a){
     case "setup":    S.screen="setup"; S.error=""; render(); break;
     case "do-capture": submitCapture(); break;
     case "open-upd":   S.updOpen=true; S.error=""; render(); break;
-    case "cancel-upd": S.updOpen=false; S.updUrl=""; S.error=""; render(); break;
+    case "cancel-upd": S.updOpen=false; S.updUrl=""; S.updText=""; S.error=""; render(); break;
     case "do-upd":     submitUpdate(); break;
     case "open-del":   S.delOpen=true; S.error=""; render(); break;
     case "cancel-del": S.delOpen=false; S.error=""; render(); break;
