@@ -157,6 +157,23 @@ textarea.input{min-height:88px; resize:vertical}
 .chip-warn{position:absolute; left:10px; top:10px; display:inline-flex; align-items:center; gap:5px;
   background:var(--color-accent); color:var(--color-bg);
   font-size:11px; font-weight:700; padding:4px 9px; border-radius:999px}
+/* The heart floats over the photograph as a sibling of the card button — see heartHTML.
+   44px of tap target for messy hands, and a white scrim so an outline stays visible on a
+   bright thumbnail. */
+.card-wrap{position:relative; display:flex}
+.card-wrap>.card{flex:1; min-width:0}
+.heart{position:absolute; right:8px; top:8px; z-index:2; width:40px; height:40px;
+  display:inline-flex; align-items:center; justify-content:center; border:none; padding:0;
+  border-radius:999px; cursor:pointer; font-family:inherit;
+  background:color-mix(in srgb,var(--color-neutral-900) 42%,transparent); color:#fff;
+  transition:transform .12s, background .12s, color .12s}
+.heart:hover{transform:scale(1.08)}
+.heart:focus-visible{outline:2px solid #fff; outline-offset:2px}
+.heart.on{background:var(--color-bg); color:var(--color-accent)}
+.heart-lg{right:12px; top:12px; width:48px; height:48px}
+/* The favourites filter uses the same pill as "Filter by tag", tinted with the accent so
+   it reads as the heart's colour rather than another neutral toggle. */
+.fav-toggle.on{background:var(--color-accent-100); color:var(--color-accent-700)}
 .card-body{padding:14px 16px 16px; display:flex; flex-direction:column; gap:10px}
 .card-title{font-size:19px; line-height:1.16; letter-spacing:-0.01em}
 .card-stamp{display:flex; align-items:center; gap:6px; font-size:12.5px;
@@ -231,7 +248,7 @@ details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:
    ══════════════════════════════════════════════════════════════════════════ */
 
 const CFG = { owner:"simpsonbm1", repo:"recipedb", branch:"main" };
-const LS  = { tok:"rdb.token", dev:"rdb.device" };
+const LS  = { tok:"rdb.token", dev:"rdb.device", fav:"rdb.favorites" };
 
 /* Who is submitting, without ever asking them.
    Three people share this board and none of them should meet a "your name" field on the
@@ -286,6 +303,24 @@ const S = {
   activeBy: "",      // the submitter the list is filtered by ("" = everyone)
   queueCount: null,  // links waiting to convert; null = not known yet
 
+  /* ── favourites ──────────────────────────────────────────────────────────
+     Shared between phones, not private to a device: two people cook out of this
+     store and "the ones we like" has to mean the same list on both. So the hearts
+     live in favorites.json in the PRIVATE repo, written through the same PAT that
+     writes the queue. Kept out of the recipe records and out of index.json on
+     purpose — hearting is not editing a recipe, and it must not need a machine to
+     rebuild the index before the other phone can see it.
+     The last-read copy is mirrored into localStorage so a kitchen with no signal
+     still shows the right hearts. */
+  favorites: favCacheRead(),   // last known list, so the hearts paint before the fetch lands
+  favSha: null,      // contents-API sha of favorites.json; null = never fetched, or absent
+  favOnly: false,    // the list is filtered to favourites
+  favBusy: false,    // a write is in flight; blocks a second tap racing it
+  // Kept apart from S.error on purpose: on the list screen S.error MEANS "the recipes
+  // could not be loaded" and replaces the whole grid. A heart that failed to save must
+  // not blank the list someone is reading.
+  favError: "",
+
   /* ── crafts: the second section ──────────────────────────────────────────
      Sewing, quilting and jewellery technique videos. NOT recipes with materials
      instead of ingredients — measured against eleven real ones, they are techniques
@@ -315,9 +350,12 @@ const ICONS = {
   check:"M20 6L9 17l-5-5", utensils:"M3 2v7a3 3 0 003 3v10M8 2v20M17 2c-1.5 0-3 2-3 5s1.5 5 3 5v8",
   trash:"M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M10 11v6M14 11v6",
   filter:"M22 3H2l8 9.46V19l4 2v-8.54L22 3z", x:"M18 6L6 18M6 6l12 12",
+  heart:"M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0016.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 002 8.5c0 2.3 1.5 4.05 3 5.5l7 7z",
 };
-function icon(name, size=20){
-  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
+// `fill` is what makes a heart read as on or off — an outline and a solid shape, which is
+// legible at a glance and does not depend on colour alone.
+function icon(name, size=20, fill="none"){
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${fill}"
     stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
     style="flex-shrink:0"><path d="${ICONS[name]}"/></svg>`;
 }
@@ -376,6 +414,80 @@ async function loadQueue(idx){
   }
 }
 
+/* ── favourites ──────────────────────────────────────────────────────────────
+   One small file in the private repo, `favorites.json`, holding nothing but ids:
+
+     { "favorites": ["0001", "0092"] }
+
+   Read once when the list loads and mirrored into localStorage, so the hearts are
+   right before the network answers and stay right when it never does. */
+function favCacheRead(){
+  try{ const v=JSON.parse(localStorage.getItem(LS.fav)||"[]");
+       return new Set(Array.isArray(v)?v.map(String):[]); }
+  catch{ return new Set(); }
+}
+function favCacheWrite(){
+  try{ localStorage.setItem(LS.fav, JSON.stringify([...S.favorites])); }catch{}
+}
+function parseFavorites(text){
+  const j=JSON.parse(text);
+  const list=Array.isArray(j)?j:(j.favorites||[]);
+  return new Set(list.map(String));
+}
+function favBody(set){
+  return JSON.stringify({ favorites:[...set].sort() }, null, 2)+"\n";
+}
+async function loadFavorites(){
+  try{
+    const { text, sha } = await getFile("favorites.json");
+    S.favorites = parseFavorites(text); S.favSha = sha;
+    favCacheWrite();
+  }catch(e){
+    // 404 is the ordinary state until the first heart: nobody has favourited anything.
+    if(e.status===404){ S.favorites=new Set(); S.favSha=null; favCacheWrite(); }
+    // Anything else (offline, rate limit) leaves the cached copy in place rather than
+    // wiping hearts the user can see.
+  }
+}
+
+/* Toggling is a read-modify-write against the file as it is on GitHub right now, not
+   against what we loaded minutes ago — otherwise hearting on one phone silently undoes
+   whatever the other phone did in between. The single add-or-remove is re-applied to the
+   fresh copy, so two people hearting different recipes at once both stick. */
+async function toggleFavorite(id){
+  if(S.favBusy) return;
+  const on = !S.favorites.has(id);
+  S.favBusy = true; S.favError = "";
+  // Optimistic: the heart flips on the tap, because waiting on a round trip to see
+  // whether your tap registered is what makes a phone feel broken.
+  if(on) S.favorites.add(id); else S.favorites.delete(id);
+  favCacheWrite(); repaintFavorites();
+  try{
+    let sha=S.favSha, set;
+    try{
+      const cur = await getFile("favorites.json");
+      set = parseFavorites(cur.text); sha = cur.sha;
+    }catch(e){
+      if(e.status!==404) throw e;
+      set = new Set(); sha = null;               // first heart ever: the file does not exist yet
+    }
+    if(on) set.add(id); else set.delete(id);
+    const put = await gh(contentsUrl("favorites.json"), { method:"PUT", body:JSON.stringify({
+      message:`board: ${on?"favorite":"unfavorite"} ${id}`,
+      content:b64encode(favBody(set)), branch:CFG.branch, ...(sha?{sha}:{}) }) });
+    S.favorites = set; S.favSha = put.content?.sha || sha;
+    favCacheWrite();
+  }catch(e){
+    // Put the heart back where it was. A heart that looks saved and is not is worse than
+    // one that visibly refused.
+    if(on) S.favorites.delete(id); else S.favorites.add(id);
+    favCacheWrite();
+    S.favError = "That heart didn't save: "+e.message;
+  }finally{
+    S.favBusy = false; render();
+  }
+}
+
 async function loadIndex(){
   S.loading=true; S.error=""; render();
   try{
@@ -384,6 +496,7 @@ async function loadIndex(){
     S.index = idx.recipes || [];
     S.loading=false; render();
     loadQueue(idx).then(render);
+    loadFavorites().then(render);
     prefetchThumbs();
   }catch(e){
     S.loading=false;
@@ -452,7 +565,7 @@ async function prefetchThumbs(){
 
 async function openRecipe(id){
   S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.updText="";
-  S.updQueued=false; S.delOpen=false; S.delQueued=false; S.error=""; render();
+  S.updQueued=false; S.delOpen=false; S.delQueued=false; S.error=""; S.favError=""; render();
   if(S.recipeCache[id]){ S.recipe=S.recipeCache[id]; render(); return; }
   const card = S.index.find(r=>r.id===id);
   try{
@@ -636,15 +749,19 @@ function matchesTerms(hay, terms){
   const h=hay||"";
   return terms.every(t=>h.includes(t));
 }
-// Recipes matching every search term AND the active tag AND the active submitter
-// (all optional).
+// Recipes matching every search term AND the active tag AND the active submitter AND,
+// when it is on, the favourites filter (all optional).
 function filteredRows(){
   const terms=searchTerms(S.query.trim());
   return S.index.filter(r =>
     matchesTerms(r.search, terms) &&
+    (!S.favOnly || S.favorites.has(r.id)) &&
     (!S.activeTag || (r.tags||[]).includes(S.activeTag)) &&
     (!S.activeBy || (r.captured_by||"") === S.activeBy));
 }
+// Hearts only count for recipes that still exist — a deleted recipe leaves its id behind
+// in favorites.json, and a count that includes it is a count nobody can reconcile.
+function favCount(){ return S.index.filter(r=>S.favorites.has(r.id)).length; }
 // Everyone who has submitted, with a count each. Empty until at least two people have -
 // the filter is pointless when every recipe came from the same person, and unattributed
 // recipes (captured before this existed, or from a phone nobody has named yet) are simply
@@ -663,9 +780,10 @@ function tagCounts(){
 }
 // The count line reflects whichever filters are active.
 function listCountLine(rows){
-  if(!S.query.trim() && !S.activeTag && !S.activeBy)
+  if(!S.query.trim() && !S.activeTag && !S.activeBy && !S.favOnly)
     return `${S.index.length} recipe${S.index.length===1?"":"s"}`;
   const bits=[];
+  if(S.favOnly) bits.push("favourites");
   if(S.activeBy) bits.push(`from ${esc(S.activeBy)}`);
   if(S.activeTag) bits.push(`tagged “${esc(S.activeTag)}”`);
   if(S.query.trim()) bits.push(`“${esc(S.query.trim())}”`);
@@ -673,6 +791,11 @@ function listCountLine(rows){
 }
 // "3 waiting to convert" — the queue is invisible otherwise, and the number going up is
 // how someone knows their link actually landed.
+// A heart that failed to save has already flipped itself back; this says why, without
+// disturbing the list underneath it.
+function favErrorLine(){
+  return S.favError ? `<div class="err">${esc(S.favError)}</div>` : "";
+}
 function queueLine(){
   if(!S.queueCount) return "";
   return `<div class="queueline">${icon("clock",14)}${S.queueCount} link${
@@ -685,9 +808,9 @@ function listView(){
   let body;
   if(S.loading) body=`<div class="spin">Loading your recipes…</div>`;
   else if(S.error) body=`<div class="err">${esc(S.error)}</div>`;
-  else if(!rows.length && (S.query.trim()||S.activeTag)) body=`<div class="empty">
+  else if(!rows.length && (S.query.trim()||S.activeTag||S.activeBy||S.favOnly)) body=`<div class="empty">
     <div class="l1">Nothing matches that yet.</div>
-    <div>Every word has to appear — try dropping one, or a different tag.</div></div>`;
+    <div>Every word has to appear — try dropping one, or clear a filter.</div></div>`;
   else if(!rows.length) body=`<div class="empty"><div class="l1">No recipes yet.</div>
     <div>Paste a link to queue your first one.</div></div>`;
   else body=`<div class="grid">${rows.map(cardHTML).join("")}</div>`;
@@ -705,7 +828,18 @@ function listView(){
       data-by="${esc(b)}">${esc(b)}<span class="tag-count">${n}</span></button>`).join("")}
     </div>` : "";
 
+  // The favourites toggle sits first, before the tag panel: it is the filter someone
+  // reaches for standing in the kitchen. Hidden until something is hearted, so it never
+  // offers an empty list.
+  const nfav = favCount();
+  const favToggle = (nfav || S.favOnly)
+    ? `<button class="filter-toggle fav-toggle${S.favOnly?" on":""}" data-act="toggle-fav"
+        aria-pressed="${S.favOnly}">${icon("heart",15,S.favOnly?"currentColor":"none")}Favourites
+        <span class="tag-count">${nfav}</span></button>`
+    : "";
+
   const filterbar = `<div class="filterbar">
+    ${favToggle}
     <button class="filter-toggle${S.tagPanelOpen?" on":""}" data-act="toggle-tags">
       ${icon("filter",15)}${S.tagPanelOpen?"Hide tags":"Filter by tag"}</button>
     ${S.activeTag ? `<button class="tag tag-accent tag-btn" data-tag="${esc(S.activeTag)}"
@@ -727,6 +861,7 @@ function listView(){
     ${S.index.length?filterbar:""}
   </div></div>
   <div class="wrap" id="listbody">
+    ${favErrorLine()}
     <div class="countline">${listCountLine(rows)}</div>
     ${queueLine()}
     ${body}
@@ -878,20 +1013,34 @@ function craftDetailView(){
     </div>`;
 }
 
+// The heart is a sibling of the card, not a child of it: the card is a <button>, and a
+// button inside a button is invalid and unclickable on some phones. So the two sit in a
+// positioned wrapper and the heart floats over the photograph.
+function heartHTML(id, size=18, extra=""){
+  const on = S.favorites.has(id);
+  return `<button class="heart${on?" on":""}${extra}" data-fav="${esc(id)}"
+    aria-pressed="${on}" title="${on?"Remove from favourites":"Add to favourites"}"
+    aria-label="${on?"Remove from favourites":"Add to favourites"}"
+    >${icon("heart",size,on?"currentColor":"none")}</button>`;
+}
+
 function cardHTML(r){
   const warn = r.confidence==="low"
     ? `<span class="chip-warn">${icon("warn",13)}Check video</span>` : "";
   const time = r.total_time
     ? `<span class="chip-time">${icon("clock",13)}${esc(r.total_time)}</span>` : "";
   const tags = (r.tags||[]).slice(0,4).map(t=>`<span class="tag tag-sage">${esc(t)}</span>`).join("");
-  return `<button class="card" data-open="${esc(r.id)}">
+  return `<div class="card-wrap">
+    <button class="card" data-open="${esc(r.id)}">
     <div class="thumb">${thumbHTML(r.thumbnail)}${warn}${time}</div>
     <div class="card-body">
       <h3 class="card-title">${esc(r.title)}</h3>
       <div class="card-stamp">${icon("cal",14)}Added ${esc(shortDate(r.added))||"—"}${
         r.captured_by?` · by ${esc(r.captured_by)}`:""}</div>
       ${tags?`<div class="card-tags">${tags}</div>`:""}
-    </div></button>`;
+    </div></button>
+    ${heartHTML(r.id)}
+  </div>`;
 }
 
 function detailView(){
@@ -919,7 +1068,8 @@ function detailView(){
       <button class="btn btn-secondary" data-act="list">${icon("back")}All recipes</button>
     </div></div></div>
     <div class="wrap wrap-detail">
-      <div class="hero">${thumbHTML(r.thumbnail,88)}</div>
+      ${favErrorLine()}
+      <div class="hero">${thumbHTML(r.thumbnail,88)}${heartHTML(r.id,22," heart-lg")}</div>
       <h1 class="d-title">${esc(r.title)}</h1>
       <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · added ${esc(shortDate(r.added))}${
         r.captured_by?` · sent in by <button class="linkish" data-by="${esc(r.captured_by)}"
@@ -1161,13 +1311,24 @@ function render(){
   wire();
 }
 
+/* Opening a recipe and hearting one, wired together because the live-search repaint
+   rebuilds the grid on its own and has to re-attach both. A heart click must not also
+   open the recipe underneath it. */
+function wireCards(root){
+  root.querySelectorAll("[data-open]").forEach(el=>{
+    el.onclick=()=>openRecipe(el.getAttribute("data-open"));
+  });
+  root.querySelectorAll("[data-fav]").forEach(el=>{
+    el.onclick=e=>{ e.stopPropagation(); e.preventDefault();
+      toggleFavorite(el.getAttribute("data-fav")); };
+  });
+}
+
 function wire(){
   document.querySelectorAll("[data-act]").forEach(el=>{
     el.onclick=()=>act(el.getAttribute("data-act"));
   });
-  document.querySelectorAll("[data-open]").forEach(el=>{
-    el.onclick=()=>openRecipe(el.getAttribute("data-open"));
-  });
+  wireCards(document);
   // Tag chips (in the filter panel and on the detail page): set/toggle the tag filter and
   // show the filtered list. Clicking the already-active tag clears it.
   document.querySelectorAll("[data-tag]").forEach(el=>{
@@ -1219,13 +1380,30 @@ function repaintList(){
   const grid = rows.length
     ? `<div class="grid">${rows.map(cardHTML).join("")}</div>`
     : `<div class="empty"><div class="l1">Nothing matches that yet.</div>
-       <div>Every word has to appear — try dropping one, or a different tag.</div></div>`;
-  wrap.innerHTML=`<div class="countline">${listCountLine(rows)}</div>${queueLine()}${grid}`;
-  wrap.querySelectorAll("[data-open]").forEach(el=>el.onclick=()=>openRecipe(el.getAttribute("data-open")));
+       <div>Every word has to appear — try dropping one, or clear a filter.</div></div>`;
+  wrap.innerHTML=`${favErrorLine()}<div class="countline">${listCountLine(rows)}</div>${queueLine()}${grid}`;
+  wireCards(wrap);
   // reattach thumbnails already in memory
   rows.forEach(r=>{ if(r.thumbnail&&S.thumbCache[r.thumbnail]){
     const el=wrap.querySelector(`[data-thumb="${CSS.escape(r.thumbnail)}"]`);
     if(el) el.outerHTML=`<img src="${S.thumbCache[r.thumbnail]}" alt="">`; }});
+}
+
+/* Flip the hearts already on screen without rebuilding the page, so the tap feels
+   instant. When the list is filtered to favourites, un-hearting has to remove the card
+   as well, which is a grid repaint rather than an icon swap. */
+function repaintFavorites(){
+  if(S.screen==="list" && S.favOnly){ repaintList(); }
+  else document.querySelectorAll("[data-fav]").forEach(el=>{
+    const on=S.favorites.has(el.getAttribute("data-fav"));
+    const big=el.classList.contains("heart-lg");
+    el.classList.toggle("on",on);
+    el.setAttribute("aria-pressed",String(on));
+    el.title = on?"Remove from favourites":"Add to favourites";
+    el.innerHTML = icon("heart",big?22:18,on?"currentColor":"none");
+  });
+  const n=document.querySelector(".fav-toggle .tag-count");
+  if(n) n.textContent=String(favCount());
 }
 
 function act(a){
@@ -1243,12 +1421,13 @@ function act(a){
       const el=document.getElementById("caprel"+(S.links.length-1)); if(el) el.focus();
       break;
     }
-    case "list":     S.tab="recipes"; S.screen="list"; S.error=""; render(); break;
+    case "list":     S.tab="recipes"; S.screen="list"; S.error=""; S.favError=""; render(); break;
     case "crafts":   S.tab="crafts"; S.screen="crafts"; S.error=""; render(); break;
     case "tab-recipes": S.tab="recipes"; S.screen="list"; S.error=""; render(); break;
     case "tab-crafts":  S.tab="crafts"; S.screen="crafts"; S.error="";
                         if(!S.craftsLoaded) loadCrafts(); else render(); break;
     case "toggle-tags": S.tagPanelOpen=!S.tagPanelOpen; render(); break;
+    case "toggle-fav":  S.favOnly=!S.favOnly; S.screen="list"; render(); break;
     case "capture":  S.screen="capture"; S.error=""; render(); break;
     case "setup":    S.screen="setup"; S.error=""; render(); break;
     case "do-capture": submitCapture(); break;
