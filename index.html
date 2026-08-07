@@ -626,12 +626,22 @@ function thumbHTML(path, ph=64){
   return `<span class="ph">${icon("utensils",ph)}</span>`;
 }
 
-// Recipes matching the current search text AND the active tag AND the active submitter
+/* Search terms are AND-ed, not matched as one phrase. "honey steak" means both words
+   somewhere in the record, in any order - which is how someone narrows a list they are
+   staring at: type a word, see too many, type another. Matching the raw string instead
+   made a second word return nothing, because the haystack never contains "honey steak"
+   literally. Substring per term is deliberate: "chorizo" should still hit "chorizos". */
+function searchTerms(q){ return q.toLowerCase().split(/\s+/).filter(Boolean); }
+function matchesTerms(hay, terms){
+  const h=hay||"";
+  return terms.every(t=>h.includes(t));
+}
+// Recipes matching every search term AND the active tag AND the active submitter
 // (all optional).
 function filteredRows(){
-  const q=S.query.trim().toLowerCase();
+  const terms=searchTerms(S.query.trim());
   return S.index.filter(r =>
-    (!q || (r.search||"").includes(q)) &&
+    matchesTerms(r.search, terms) &&
     (!S.activeTag || (r.tags||[]).includes(S.activeTag)) &&
     (!S.activeBy || (r.captured_by||"") === S.activeBy));
 }
@@ -677,7 +687,7 @@ function listView(){
   else if(S.error) body=`<div class="err">${esc(S.error)}</div>`;
   else if(!rows.length && (S.query.trim()||S.activeTag)) body=`<div class="empty">
     <div class="l1">Nothing matches that yet.</div>
-    <div>Try a single ingredient, or a different tag — the corpus is small and personal.</div></div>`;
+    <div>Every word has to appear — try dropping one, or a different tag.</div></div>`;
   else if(!rows.length) body=`<div class="empty"><div class="l1">No recipes yet.</div>
     <div>Paste a link to queue your first one.</div></div>`;
   else body=`<div class="grid">${rows.map(cardHTML).join("")}</div>`;
@@ -732,9 +742,9 @@ function tabsHTML(){
   </div>`;
 }
 function craftRows(){
-  const q=S.craftQuery.trim().toLowerCase();
+  const terms=searchTerms(S.craftQuery.trim());
   return S.crafts.filter(c =>
-    (!q || (c.search||"").includes(q)) &&
+    matchesTerms(c.search, terms) &&
     (!S.activeCraft || c.craft===S.activeCraft) &&
     (!S.craftBy || (c.captured_by||"")===S.craftBy));
 }
@@ -1209,7 +1219,7 @@ function repaintList(){
   const grid = rows.length
     ? `<div class="grid">${rows.map(cardHTML).join("")}</div>`
     : `<div class="empty"><div class="l1">Nothing matches that yet.</div>
-       <div>Try a single ingredient, or a different tag — the corpus is small and personal.</div></div>`;
+       <div>Every word has to appear — try dropping one, or a different tag.</div></div>`;
   wrap.innerHTML=`<div class="countline">${listCountLine(rows)}</div>${queueLine()}${grid}`;
   wrap.querySelectorAll("[data-open]").forEach(el=>el.onclick=()=>openRecipe(el.getAttribute("data-open")));
   // reattach thumbnails already in memory
