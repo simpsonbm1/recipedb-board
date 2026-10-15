@@ -130,6 +130,17 @@ textarea.input{min-height:88px; resize:vertical}
 .queueline{display:inline-flex; align-items:center; gap:7px; font-size:13.5px; font-weight:600;
   color:var(--color-accent-2-700); background:var(--color-accent-2-100);
   border-radius:999px; padding:7px 14px; margin:-4px 2px 14px}
+.attnline{font-size:13.5px; margin:-6px 2px 14px; max-width:100%}
+.attnline summary{display:inline-flex; align-items:center; gap:7px; font-weight:600; cursor:pointer;
+  list-style:none; color:var(--color-accent-700); background:var(--color-accent-100);
+  border-radius:999px; padding:7px 14px; min-height:36px; box-sizing:border-box}
+.attnline summary::-webkit-details-marker{display:none}
+.attnline ul{list-style:none; margin:10px 0 0; padding:0; display:flex; flex-direction:column; gap:10px}
+.attnline li{background:color-mix(in srgb,var(--color-text) 5%,transparent); border-radius:12px;
+  padding:10px 12px; overflow-wrap:anywhere}
+.attn-what{font-weight:600}
+.attn-what a{color:inherit}
+.attn-why{margin-top:3px; color:color-mix(in srgb,var(--color-text) 72%,transparent)}
 .barlabel{font-size:12.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700;
   color:color-mix(in srgb,var(--color-text) 45%,transparent); margin-right:1px}
 .peoplebar{margin-top:8px}
@@ -302,6 +313,7 @@ const S = {
   tagPanelOpen: false, // the "filter by tag" panel is expanded
   activeBy: "",      // the submitter the list is filtered by ("" = everyone)
   queueCount: null,  // links waiting to convert; null = not known yet
+  attention: [],     // queued links the PC's hourly run left for a person, with its reason
 
   /* ── favourites ──────────────────────────────────────────────────────────
      Shared between phones, not private to a device: two people cook out of this
@@ -403,7 +415,11 @@ async function getFile(p){
    capture from any phone shows up immediately rather than after the next conversion run. */
 async function loadQueue(idx){
   const q = idx.queue;
-  if(!q){ S.queueCount=null; return; }          // an index written before this existed
+  if(!q){ S.queueCount=null; S.attention=[]; return; }   // an index written before this existed
+  // Entries the hourly conversion run would not convert alone: ones it held with a reason,
+  // extraction failures, and delete requests. Already inside `pending`; listed so the
+  // reason is readable from the phone.
+  S.attention = Array.isArray(q.attention) ? q.attention : [];
   try{
     const files = await gh(`${contentsUrl("inbox")}?ref=${CFG.branch}&_=${Date.now()}`,
                            { cache:"no-store" });
@@ -799,7 +815,21 @@ function favErrorLine(){
 function queueLine(){
   if(!S.queueCount) return "";
   return `<div class="queueline">${icon("clock",14)}${S.queueCount} link${
-    S.queueCount===1?"":"s"} waiting to convert</div>`;
+    S.queueCount===1?"":"s"} waiting to convert</div>${attentionLine()}`;
+}
+// What the hourly run on the PC left for a person, and why. A <details> so the count is
+// one line until tapped; the reasons are the run's own words.
+function attentionLine(){
+  const a = S.attention;
+  if(!a.length) return "";
+  const what = e => e.kind==="delete" ? `Delete recipe ${esc(e.recipe)}`
+    : e.kind==="update" ? `Update to recipe ${esc(e.recipe)}`
+    : e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.url.replace(/^https?:\/\/(www\.)?/,"").slice(0,48))}</a>`
+    : esc(e.id);
+  return `<details class="attnline"><summary>${icon("warn",14)}${a.length} need${
+    a.length===1?"s":""} attention</summary><ul>${a.map(e=>
+    `<li><div class="attn-what">${what(e)}</div><div class="attn-why">${esc(e.reason)}</div></li>`
+    ).join("")}</ul></details>`;
 }
 
 function listView(){
