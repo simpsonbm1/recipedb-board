@@ -182,6 +182,19 @@ textarea.input{min-height:88px; resize:vertical}
 .heart:focus-visible{outline:2px solid #fff; outline-offset:2px}
 .heart.on{background:var(--color-bg); color:var(--color-accent)}
 .heart-lg{right:12px; top:12px; width:48px; height:48px}
+/* The shopping-list bag sits just left of the heart, same button, same on/off reading. */
+.heart.bag{right:56px}
+.heart-lg.bag{right:68px}
+.shop-row{display:flex; align-items:center; gap:10px; padding:10px 0;
+  border-bottom:1px solid var(--color-divider)}
+.shop-row .linkish{flex:1; text-align:left; font-size:17px}
+.buy{list-style:none; margin:0; padding:0}
+.buy>li{padding:12px 0; border-bottom:1px solid var(--color-divider)}
+.buy-head{display:flex; justify-content:space-between; gap:12px; font-size:18px; font-weight:600}
+.buy-total{white-space:nowrap; color:var(--color-accent-700)}
+.buy-from{margin:4px 0 0; padding:0; list-style:none; font-size:14px;
+  color:color-mix(in srgb,var(--color-text) 68%,transparent)}
+.buy-from li{margin:2px 0}
 /* The favourites filter uses the same pill as "Filter by tag", tinted with the accent so
    it reads as the heart's colour rather than another neutral toggle. */
 .fav-toggle.on{background:var(--color-accent-100); color:var(--color-accent-700)}
@@ -259,7 +272,20 @@ details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:
    ══════════════════════════════════════════════════════════════════════════ */
 
 const CFG = { owner:"simpsonbm1", repo:"recipedb", branch:"main" };
-const LS  = { tok:"rdb.token", dev:"rdb.device", fav:"rdb.favorites" };
+const LS  = { tok:"rdb.token", dev:"rdb.device", fav:"rdb.favorites", shop:"rdb.shopping",
+              ing:"rdb.shopping-ingredients" };
+
+/* The two shared lists a recipe can be on, independently: favourites (the ones we like)
+   and the shopping list (the ones we mean to cook next, whose ingredients get bought).
+   A recipe can be on both — a favourite still needs shopping for. Same file shape, same
+   read-modify-write, so one implementation serves both. */
+const LISTS = {
+  fav:  { file:"favorites.json", key:"favorites", ls:LS.fav, set:"favorites", sha:"favSha",
+          on:"favorite", off:"unfavorite", fail:"That heart didn't save: " },
+  shop: { file:"shopping.json", key:"shopping", ls:LS.shop, set:"shopping", sha:"shopSha",
+          on:"add to shopping list", off:"remove from shopping list",
+          fail:"That didn't save to the shopping list: " },
+};
 
 /* Who is submitting, without ever asking them.
    Three people share this board and none of them should meet a "your name" field on the
@@ -324,13 +350,20 @@ const S = {
      rebuild the index before the other phone can see it.
      The last-read copy is mirrored into localStorage so a kitchen with no signal
      still shows the right hearts. */
-  favorites: favCacheRead(),   // last known list, so the hearts paint before the fetch lands
+  favorites: listCacheRead("fav"),   // last known list, so the hearts paint before the fetch lands
   favSha: null,      // contents-API sha of favorites.json; null = never fetched, or absent
   favOnly: false,    // the list is filtered to favourites
-  favBusy: false,    // a write is in flight; blocks a second tap racing it
+  // The shopping list: same mechanics as favourites, in shopping.json.
+  shopping: listCacheRead("shop"),
+  shopSha: null,
+  busy: { fav:false, shop:false },   // a write is in flight; blocks a second tap racing it
+  // Every recipe's ingredients with shopping names and parsed amounts, from
+  // recipes/ingredients.json. Fetched only when the shopping list is opened.
+  ingredients: ingCacheRead(),
+  ingLoaded: false,
   // Kept apart from S.error on purpose: on the list screen S.error MEANS "the recipes
   // could not be loaded" and replaces the whole grid. A heart that failed to save must
-  // not blank the list someone is reading.
+  // not blank the list someone is reading. Serves the shopping list toggle too.
   favError: "",
 
   /* ── crafts: the second section ──────────────────────────────────────────
@@ -362,6 +395,7 @@ const ICONS = {
   check:"M20 6L9 17l-5-5", utensils:"M3 2v7a3 3 0 003 3v10M8 2v20M17 2c-1.5 0-3 2-3 5s1.5 5 3 5v8",
   trash:"M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M10 11v6M14 11v6",
   filter:"M22 3H2l8 9.46V19l4 2v-8.54L22 3z", x:"M18 6L6 18M6 6l12 12",
+  bag:"M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4zM3 6h18M16 10a4 4 0 01-8 0",
   heart:"M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0016.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 002 8.5c0 2.3 1.5 4.05 3 5.5l7 7z",
 };
 // `fill` is what makes a heart read as on or off — an outline and a solid shape, which is
@@ -430,78 +464,106 @@ async function loadQueue(idx){
   }
 }
 
-/* ── favourites ──────────────────────────────────────────────────────────────
-   One small file in the private repo, `favorites.json`, holding nothing but ids:
+/* ── favourites and the shopping list ────────────────────────────────────────
+   One small file each in the private repo, holding nothing but ids:
 
-     { "favorites": ["0001", "0092"] }
+     favorites.json   { "favorites": ["0001", "0092"] }
+     shopping.json    { "shopping":  ["0092", "0140"] }
 
-   Read once when the list loads and mirrored into localStorage, so the hearts are
+   Read once when the list loads and mirrored into localStorage, so the buttons are
    right before the network answers and stay right when it never does. */
-function favCacheRead(){
-  try{ const v=JSON.parse(localStorage.getItem(LS.fav)||"[]");
+function listCacheRead(kind){
+  try{ const v=JSON.parse(localStorage.getItem(LISTS[kind].ls)||"[]");
        return new Set(Array.isArray(v)?v.map(String):[]); }
   catch{ return new Set(); }
 }
-function favCacheWrite(){
-  try{ localStorage.setItem(LS.fav, JSON.stringify([...S.favorites])); }catch{}
+function listCacheWrite(kind){
+  try{ localStorage.setItem(LISTS[kind].ls, JSON.stringify([...S[LISTS[kind].set]])); }catch{}
 }
-function parseFavorites(text){
+function parseList(kind, text){
   const j=JSON.parse(text);
-  const list=Array.isArray(j)?j:(j.favorites||[]);
+  const list=Array.isArray(j)?j:(j[LISTS[kind].key]||[]);
   return new Set(list.map(String));
 }
-function favBody(set){
-  return JSON.stringify({ favorites:[...set].sort() }, null, 2)+"\n";
+function listBody(kind, set){
+  return JSON.stringify({ [LISTS[kind].key]:[...set].sort() }, null, 2)+"\n";
 }
-async function loadFavorites(){
+async function loadList(kind){
+  const L=LISTS[kind];
   try{
-    const { text, sha } = await getFile("favorites.json");
-    S.favorites = parseFavorites(text); S.favSha = sha;
-    favCacheWrite();
+    const { text, sha } = await getFile(L.file);
+    S[L.set] = parseList(kind, text); S[L.sha] = sha;
+    listCacheWrite(kind);
   }catch(e){
-    // 404 is the ordinary state until the first heart: nobody has favourited anything.
-    if(e.status===404){ S.favorites=new Set(); S.favSha=null; favCacheWrite(); }
+    // 404 is the ordinary state until the first tap: nothing has been added yet.
+    if(e.status===404){ S[L.set]=new Set(); S[L.sha]=null; listCacheWrite(kind); }
     // Anything else (offline, rate limit) leaves the cached copy in place rather than
-    // wiping hearts the user can see.
+    // wiping marks the user can see.
   }
 }
 
 /* Toggling is a read-modify-write against the file as it is on GitHub right now, not
-   against what we loaded minutes ago — otherwise hearting on one phone silently undoes
+   against what we loaded minutes ago — otherwise a tap on one phone silently undoes
    whatever the other phone did in between. The single add-or-remove is re-applied to the
-   fresh copy, so two people hearting different recipes at once both stick. */
-async function toggleFavorite(id){
-  if(S.favBusy) return;
-  const on = !S.favorites.has(id);
-  S.favBusy = true; S.favError = "";
-  // Optimistic: the heart flips on the tap, because waiting on a round trip to see
+   fresh copy, so two people changing different recipes at once both stick. */
+async function toggleListed(kind, id){
+  const L=LISTS[kind];
+  if(S.busy[kind]) return;
+  const on = !S[L.set].has(id);
+  S.busy[kind] = true; S.favError = "";
+  // Optimistic: the button flips on the tap, because waiting on a round trip to see
   // whether your tap registered is what makes a phone feel broken.
-  if(on) S.favorites.add(id); else S.favorites.delete(id);
-  favCacheWrite(); repaintFavorites();
+  if(on) S[L.set].add(id); else S[L.set].delete(id);
+  listCacheWrite(kind); repaintLists();
   try{
-    let sha=S.favSha, set;
+    let sha=S[L.sha], set;
     try{
-      const cur = await getFile("favorites.json");
-      set = parseFavorites(cur.text); sha = cur.sha;
+      const cur = await getFile(L.file);
+      set = parseList(kind, cur.text); sha = cur.sha;
     }catch(e){
       if(e.status!==404) throw e;
-      set = new Set(); sha = null;               // first heart ever: the file does not exist yet
+      set = new Set(); sha = null;               // first tap ever: the file does not exist yet
     }
     if(on) set.add(id); else set.delete(id);
-    const put = await gh(contentsUrl("favorites.json"), { method:"PUT", body:JSON.stringify({
-      message:`board: ${on?"favorite":"unfavorite"} ${id}`,
-      content:b64encode(favBody(set)), branch:CFG.branch, ...(sha?{sha}:{}) }) });
-    S.favorites = set; S.favSha = put.content?.sha || sha;
-    favCacheWrite();
+    const put = await gh(contentsUrl(L.file), { method:"PUT", body:JSON.stringify({
+      message:`board: ${on?L.on:L.off} ${id}`,
+      content:b64encode(listBody(kind, set)), branch:CFG.branch, ...(sha?{sha}:{}) }) });
+    S[L.set] = set; S[L.sha] = put.content?.sha || sha;
+    listCacheWrite(kind);
   }catch(e){
-    // Put the heart back where it was. A heart that looks saved and is not is worse than
-    // one that visibly refused.
-    if(on) S.favorites.delete(id); else S.favorites.add(id);
-    favCacheWrite();
-    S.favError = "That heart didn't save: "+e.message;
+    // Put it back where it was. A mark that looks saved and is not is worse than one
+    // that visibly refused.
+    if(on) S[L.set].delete(id); else S[L.set].add(id);
+    listCacheWrite(kind);
+    S.favError = L.fail+e.message;
   }finally{
-    S.favBusy = false; render();
+    S.busy[kind] = false; render();
+    if(kind==="shop" && on && !S.ingLoaded) loadIngredients();
   }
+}
+
+/* ── the shopping list's ingredients ─────────────────────────────────────────
+   recipes/ingredients.json carries every recipe's ingredient lines, each with the
+   shopping name(s) the machine gave it and, where the amount starts with a number, a
+   parsed quantity and unit. The phone only groups by name and adds numbers that share
+   a unit — the naming is decided on the machine, never here.
+   Only the recipes on the list are mirrored into localStorage, so the list still
+   reads in a shop with no signal. */
+function ingCacheRead(){
+  try{ const v=JSON.parse(localStorage.getItem(LS.ing)||"{}"); return v&&typeof v==="object"?v:{}; }
+  catch{ return {}; }
+}
+function ingCacheWrite(){
+  const keep={}; for(const id of S.shopping) if(S.ingredients[id]) keep[id]=S.ingredients[id];
+  try{ localStorage.setItem(LS.ing, JSON.stringify(keep)); }catch{}
+}
+async function loadIngredients(){
+  try{
+    const { text } = await getFile("recipes/ingredients.json");
+    S.ingredients = JSON.parse(text).recipes || {};
+    S.ingLoaded = true; ingCacheWrite();
+  }catch{ /* keep the cached copy; the screen says if a recipe has nothing to show */ }
+  if(S.screen==="shopping") render();
 }
 
 async function loadIndex(){
@@ -512,7 +574,8 @@ async function loadIndex(){
     S.index = idx.recipes || [];
     S.loading=false; render();
     loadQueue(idx).then(render);
-    loadFavorites().then(render);
+    loadList("fav").then(render);
+    loadList("shop").then(render);
     prefetchThumbs();
   }catch(e){
     S.loading=false;
@@ -778,6 +841,8 @@ function filteredRows(){
 // Hearts only count for recipes that still exist — a deleted recipe leaves its id behind
 // in favorites.json, and a count that includes it is a count nobody can reconcile.
 function favCount(){ return S.index.filter(r=>S.favorites.has(r.id)).length; }
+function shopRecipes(){ return S.index.filter(r=>S.shopping.has(r.id)); }
+function shopCount(){ return shopRecipes().length; }
 // Everyone who has submitted, with a count each. Empty until at least two people have -
 // the filter is pointless when every recipe came from the same person, and unattributed
 // recipes (captured before this existed, or from a phone nobody has named yet) are simply
@@ -868,8 +933,16 @@ function listView(){
         <span class="tag-count">${nfav}</span></button>`
     : "";
 
+  // The shopping list opens its own screen rather than filtering this one: what it is for
+  // is the merged list of what to buy, not the cards. Hidden until something is on it.
+  const nshop = shopCount();
+  const shopToggle = nshop
+    ? `<button class="filter-toggle fav-toggle" data-act="shopping">${icon("bag",15)}Shopping list
+        <span class="tag-count">${nshop}</span></button>`
+    : "";
+
   const filterbar = `<div class="filterbar">
-    ${favToggle}
+    ${favToggle}${shopToggle}
     <button class="filter-toggle${S.tagPanelOpen?" on":""}" data-act="toggle-tags">
       ${icon("filter",15)}${S.tagPanelOpen?"Hide tags":"Filter by tag"}</button>
     ${S.activeTag ? `<button class="tag tag-accent tag-btn" data-tag="${esc(S.activeTag)}"
@@ -1053,6 +1126,13 @@ function heartHTML(id, size=18, extra=""){
     aria-label="${on?"Remove from favourites":"Add to favourites"}"
     >${icon("heart",size,on?"currentColor":"none")}</button>`;
 }
+function bagTitle(on){ return on?"Remove from the shopping list":"Add to the shopping list"; }
+function bagHTML(id, size=18, extra=""){
+  const on = S.shopping.has(id);
+  return `<button class="heart bag${on?" on":""}${extra}" data-shop="${esc(id)}"
+    aria-pressed="${on}" title="${bagTitle(on)}" aria-label="${bagTitle(on)}"
+    >${icon("bag",size,on?"currentColor":"none")}</button>`;
+}
 
 function cardHTML(r){
   const warn = r.confidence==="low"
@@ -1069,7 +1149,7 @@ function cardHTML(r){
         r.captured_by?` · by ${esc(r.captured_by)}`:""}</div>
       ${tags?`<div class="card-tags">${tags}</div>`:""}
     </div></button>
-    ${heartHTML(r.id)}
+    ${bagHTML(r.id)}${heartHTML(r.id)}
   </div>`;
 }
 
@@ -1099,7 +1179,7 @@ function detailView(){
     </div></div></div>
     <div class="wrap wrap-detail">
       ${favErrorLine()}
-      <div class="hero">${thumbHTML(r.thumbnail,88)}${heartHTML(r.id,22," heart-lg")}</div>
+      <div class="hero">${thumbHTML(r.thumbnail,88)}${bagHTML(r.id,22," heart-lg")}${heartHTML(r.id,22," heart-lg")}</div>
       <h1 class="d-title">${esc(r.title)}</h1>
       <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · added ${esc(shortDate(r.added))}${
         r.captured_by?` · sent in by <button class="linkish" data-by="${esc(r.captured_by)}"
@@ -1121,6 +1201,84 @@ function detailView(){
       ${relatedBlock(r)}
       ${raw}
       ${deleteBlock(r)}
+    </div>`;
+}
+
+/* ══ shopping list ══ */
+// 1.5 -> "1½", 0.333 -> "⅓". Amounts here came out of recipes written with fractions, so
+// they read back the same way; anything else is rounded, never shown as 0.3333.
+const FRACS=[[.125,"⅛"],[.25,"¼"],[1/3,"⅓"],[.5,"½"],[2/3,"⅔"],[.75,"¾"]];
+function fmtQty(n){
+  const whole=Math.floor(n+1e-6), part=n-whole;
+  if(part<0.02) return String(whole);
+  const f=FRACS.find(([v])=>Math.abs(v-part)<0.02);
+  if(f) return (whole?whole:"")+f[1];
+  return String(Math.round(n*100)/100);
+}
+const PLURAL={cup:"cups",clove:"cloves",can:"cans",jar:"jars",stick:"sticks",package:"packages",
+  packet:"packets",bag:"bags",box:"boxes",slice:"slices",head:"heads",bunch:"bunches",
+  block:"blocks",bottle:"bottles",pinch:"pinches"};
+function fmtAmount(qty, unit){
+  const u = unit && qty>1 ? (PLURAL[unit]||unit) : unit;
+  return u ? `${fmtQty(qty)} ${u}` : fmtQty(qty);
+}
+
+/* Every ingredient of every recipe on the list, grouped by the shopping name the machine
+   gave it. A group shows a total only when every line in it has a number in the same
+   unit — "2 cloves" and "3 cloves" make "5 cloves", but "2 cloves" and "1 tbsp" do not
+   make anything, and a total that is quietly wrong is worse than none. A line naming
+   two things ("Salt & pepper") sits under both, and never counts toward a total. */
+function shoppingGroups(){
+  const groups={};
+  for(const r of shopRecipes()){
+    for(const ing of (S.ingredients[r.id]||[])){
+      const shops=(ing.shop&&ing.shop.length)?ing.shop:[ing.name.toLowerCase()];
+      for(const s of shops){
+        (groups[s] ||= []).push({ ...ing, recipe:r, shared:shops.length>1 });
+      }
+    }
+  }
+  return Object.entries(groups).sort((a,b)=>a[0].localeCompare(b[0])).map(([name,rows])=>{
+    const units=new Set(rows.map(x=>x.unit));
+    const summable = rows.length>1 && units.size===1
+      && rows.every(x=>x.qty!=null && !x.shared);
+    const total = summable ? fmtAmount(rows.reduce((t,x)=>t+x.qty,0), rows[0].unit) : "";
+    return { name, rows, total };
+  });
+}
+
+function shoppingView(){
+  const recipes=shopRecipes();
+  const back=`<div class="header"><div class="wrap"><div class="hrow">
+      <button class="btn btn-secondary" data-act="list">${icon("back")}All recipes</button>
+    </div></div></div>`;
+  if(!recipes.length) return back+`<div class="wrap wrap-detail">
+      <h1 class="d-title">Shopping list</h1>
+      <div class="empty"><div class="l1">Nothing on the shopping list.</div>
+      <div>Tap the bag on a recipe to add it.</div></div></div>`;
+  const missing=recipes.filter(r=>!S.ingredients[r.id]);
+  const groups=shoppingGroups();
+  const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
+  const buy = groups.map(g=>`<li><div class="buy-head"><span>${esc(cap(g.name))}</span>${
+      g.total?`<span class="buy-total">${esc(g.total)}</span>`:""}</div>
+    <ul class="buy-from">${g.rows.map(x=>{
+      // Show the recipe's own wording whenever it says more than the group name does.
+      const own = x.name.toLowerCase()!==g.name ? x.name : "";
+      const what = [x.amount||"amount not given", own].filter(Boolean).join(" · ");
+      return `<li>${esc(what)} — <em>${esc(x.recipe.title)}</em></li>`; }).join("")}</ul></li>`).join("");
+  return back+`<div class="wrap wrap-detail">
+      ${favErrorLine()}
+      <h1 class="d-title">Shopping list</h1>
+      <h2 class="sec">Recipes</h2>
+      ${recipes.map(r=>`<div class="shop-row">
+        <button class="linkish" data-open="${esc(r.id)}">${esc(r.title)}</button>
+        <button class="btn btn-secondary" data-shop="${esc(r.id)}"
+          aria-label="Remove ${esc(r.title)} from the shopping list">${icon("x",16)}</button></div>`).join("")}
+      <h2 class="sec">What to buy</h2>
+      ${missing.length && !S.ingLoaded ? `<div class="spin">Loading ingredients…</div>`
+        : missing.length ? `<div class="err">No ingredient list yet for: ${
+            missing.map(r=>esc(r.title)).join(", ")}.</div>` : ""}
+      <ul class="buy">${buy}</ul>
     </div>`;
 }
 
@@ -1332,6 +1490,7 @@ function render(){
     case "crafts":       html=craftsView(); break;
     case "craft-detail": html=craftDetailView(); break;
     case "detail":   html=detailView(); break;
+    case "shopping": html=shoppingView(); break;
     case "capture":  html=captureView(); break;
     case "captured": html=capturedView(); break;
     case "setup":    html=setupView(); break;
@@ -1350,7 +1509,11 @@ function wireCards(root){
   });
   root.querySelectorAll("[data-fav]").forEach(el=>{
     el.onclick=e=>{ e.stopPropagation(); e.preventDefault();
-      toggleFavorite(el.getAttribute("data-fav")); };
+      toggleListed("fav", el.getAttribute("data-fav")); };
+  });
+  root.querySelectorAll("[data-shop]").forEach(el=>{
+    el.onclick=e=>{ e.stopPropagation(); e.preventDefault();
+      toggleListed("shop", el.getAttribute("data-shop")); };
   });
 }
 
@@ -1419,12 +1582,14 @@ function repaintList(){
     if(el) el.outerHTML=`<img src="${S.thumbCache[r.thumbnail]}" alt="">`; }});
 }
 
-/* Flip the hearts already on screen without rebuilding the page, so the tap feels
-   instant. When the list is filtered to favourites, un-hearting has to remove the card
-   as well, which is a grid repaint rather than an icon swap. */
-function repaintFavorites(){
-  if(S.screen==="list" && S.favOnly){ repaintList(); }
-  else document.querySelectorAll("[data-fav]").forEach(el=>{
+/* Flip the hearts and bags already on screen without rebuilding the page, so the tap
+   feels instant. When the list is filtered to favourites, un-hearting has to remove the
+   card as well, which is a grid repaint rather than an icon swap; the shopping screen is
+   rebuilt for the same reason. */
+function repaintLists(){
+  if(S.screen==="shopping"){ render(); return; }
+  if(S.screen==="list" && S.favOnly){ repaintList(); return; }
+  document.querySelectorAll("[data-fav]").forEach(el=>{
     const on=S.favorites.has(el.getAttribute("data-fav"));
     const big=el.classList.contains("heart-lg");
     el.classList.toggle("on",on);
@@ -1432,7 +1597,15 @@ function repaintFavorites(){
     el.title = on?"Remove from favourites":"Add to favourites";
     el.innerHTML = icon("heart",big?22:18,on?"currentColor":"none");
   });
-  const n=document.querySelector(".fav-toggle .tag-count");
+  document.querySelectorAll("[data-shop].bag").forEach(el=>{
+    const on=S.shopping.has(el.getAttribute("data-shop"));
+    const big=el.classList.contains("heart-lg");
+    el.classList.toggle("on",on);
+    el.setAttribute("aria-pressed",String(on));
+    el.title = el.ariaLabel = bagTitle(on);
+    el.innerHTML = icon("bag",big?22:18,on?"currentColor":"none");
+  });
+  const n=document.querySelector(".fav-toggle[data-act=toggle-fav] .tag-count");
   if(n) n.textContent=String(favCount());
 }
 
@@ -1458,6 +1631,8 @@ function act(a){
                         if(!S.craftsLoaded) loadCrafts(); else render(); break;
     case "toggle-tags": S.tagPanelOpen=!S.tagPanelOpen; render(); break;
     case "toggle-fav":  S.favOnly=!S.favOnly; S.screen="list"; render(); break;
+    case "shopping":    S.screen="shopping"; S.favError=""; window.scrollTo(0,0); render();
+                        if(!S.ingLoaded) loadIngredients(); break;
     case "capture":  S.screen="capture"; S.error=""; render(); break;
     case "setup":    S.screen="setup"; S.error=""; render(); break;
     case "do-capture": submitCapture(); break;
