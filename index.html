@@ -190,11 +190,14 @@ textarea.input{min-height:88px; resize:vertical}
 .shop-row .linkish{flex:1; text-align:left; font-size:17px}
 .buy{list-style:none; margin:0; padding:0}
 .buy>li{padding:12px 0; border-bottom:1px solid var(--color-divider)}
-.buy-head{display:flex; justify-content:space-between; gap:12px; font-size:18px; font-weight:600}
-.buy-total{white-space:nowrap; color:var(--color-accent-700)}
-.buy-from{margin:4px 0 0; padding:0; list-style:none; font-size:14px;
-  color:color-mix(in srgb,var(--color-text) 68%,transparent)}
-.buy-from li{margin:2px 0}
+.buy-head{display:flex; flex-wrap:wrap; align-items:baseline; column-gap:12px;
+  font-size:19px; font-weight:600}
+/* A long amount ("for greasing the crockpot") wraps under the name instead of squeezing it. */
+.buy-total{margin-left:auto; text-align:right; color:var(--color-accent-700)}
+.buy-from{margin:6px 0 0; padding:0; list-style:none; font-size:15.5px; line-height:1.4;
+  color:color-mix(in srgb,var(--color-text) 72%,transparent)}
+.buy-from li{margin:3px 0}
+.buy-amt{font-weight:600; color:var(--color-text)}
 /* The favourites filter uses the same pill as "Filter by tag", tinted with the accent so
    it reads as the heart's colour rather than another neutral toggle. */
 .fav-toggle.on{background:var(--color-accent-100); color:var(--color-accent-700)}
@@ -1218,16 +1221,19 @@ function fmtQty(n){
 const PLURAL={cup:"cups",clove:"cloves",can:"cans",jar:"jars",stick:"sticks",package:"packages",
   packet:"packets",bag:"bags",box:"boxes",slice:"slices",head:"heads",bunch:"bunches",
   block:"blocks",bottle:"bottles",pinch:"pinches"};
-function fmtAmount(qty, unit){
-  const u = unit && qty>1 ? (PLURAL[unit]||unit) : unit;
-  return u ? `${fmtQty(qty)} ${u}` : fmtQty(qty);
+function fmtAmount(qty, unit, max){
+  const top = max ?? qty;
+  const u = unit && top>1 ? (PLURAL[unit]||unit) : unit;
+  const n = max!=null && max!==qty ? `${fmtQty(qty)}–${fmtQty(max)}` : fmtQty(qty);
+  return u ? `${n} ${u}` : n;
 }
 
 /* Every ingredient of every recipe on the list, grouped by the shopping name the machine
-   gave it. A group shows a total only when every line in it has a number in the same
-   unit — "2 cloves" and "3 cloves" make "5 cloves", but "2 cloves" and "1 tbsp" do not
-   make anything, and a total that is quietly wrong is worse than none. A line naming
-   two things ("Salt & pepper") sits under both, and never counts toward a total. */
+   gave it. The total adds the lines that share a unit — "2 cloves" and "3 cloves" make
+   "5 cloves", and "2 lbs" with "2–2½ lbs" makes "4–4½ lbs" — and lists different units
+   side by side ("1 cup + 2 tbsp"), never converted. Lines with no number ("to taste")
+   add "+ to taste" or "+ more" rather than blocking the total. A line naming two things
+   ("Salt & pepper") sits under both, and never counts toward a number. */
 function shoppingGroups(){
   const groups={};
   for(const r of shopRecipes()){
@@ -1239,10 +1245,18 @@ function shoppingGroups(){
     }
   }
   return Object.entries(groups).sort((a,b)=>a[0].localeCompare(b[0])).map(([name,rows])=>{
-    const units=new Set(rows.map(x=>x.unit));
-    const summable = rows.length>1 && units.size===1
-      && rows.every(x=>x.qty!=null && !x.shared);
-    const total = summable ? fmtAmount(rows.reduce((t,x)=>t+x.qty,0), rows[0].unit) : "";
+    // One recipe: its own words are the clearest amount there is.
+    if(rows.length===1) return { name, rows, total: rows[0].amount };
+    const sums=new Map(), vague=[];
+    for(const x of rows){
+      if(x.qty==null || x.shared){ vague.push(x.amount||""); continue; }
+      const s=sums.get(x.unit)||{lo:0,hi:0};
+      s.lo+=x.qty; s.hi+=(x.qty_max??x.qty); sums.set(x.unit,s);
+    }
+    const parts=[...sums].map(([u,s])=>fmtAmount(s.lo,u,s.hi));
+    if(vague.length) parts.push(vague.every(v=>/taste/i.test(v)) ? "to taste" : "more");
+    // Nothing countable at all reads better as nothing than as "more".
+    const total = sums.size ? parts.join(" + ") : (parts[0]==="to taste" ? "to taste" : "");
     return { name, rows, total };
   });
 }
@@ -1259,13 +1273,17 @@ function shoppingView(){
   const missing=recipes.filter(r=>!S.ingredients[r.id]);
   const groups=shoppingGroups();
   const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
+  // The amount to buy sits on the item's own line, as large as its name. Underneath, one
+  // line per recipe says how much each needs; with a single recipe the line above already
+  // gave the amount, so only the recipe is named.
   const buy = groups.map(g=>`<li><div class="buy-head"><span>${esc(cap(g.name))}</span>${
       g.total?`<span class="buy-total">${esc(g.total)}</span>`:""}</div>
     <ul class="buy-from">${g.rows.map(x=>{
       // Show the recipe's own wording whenever it says more than the group name does.
       const own = x.name.toLowerCase()!==g.name ? x.name : "";
-      const what = [x.amount||"amount not given", own].filter(Boolean).join(" · ");
-      return `<li>${esc(what)} — <em>${esc(x.recipe.title)}</em></li>`; }).join("")}</ul></li>`).join("");
+      const amt = g.rows.length===1 ? "" : (x.amount||"amount not given");
+      return `<li>${amt?`<span class="buy-amt">${esc(amt)}</span> · `:""}${
+        own?`${esc(own)} · `:""}${esc(x.recipe.title)}</li>`; }).join("")}</ul></li>`).join("");
   return back+`<div class="wrap wrap-detail">
       ${favErrorLine()}
       <h1 class="d-title">Shopping list</h1>
