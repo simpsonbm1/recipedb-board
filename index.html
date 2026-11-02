@@ -187,7 +187,17 @@ textarea.input{min-height:88px; resize:vertical}
 .heart-lg.bag{right:68px}
 .shop-row{display:flex; align-items:center; gap:10px; padding:10px 0;
   border-bottom:1px solid var(--color-divider)}
-.shop-row .linkish{flex:1; text-align:left; font-size:17px}
+.shop-row .tick{flex:1; min-width:0; display:flex; align-items:center; gap:12px; min-height:44px;
+  background:none; border:none; padding:0; text-align:left; font:inherit; font-size:17px;
+  color:var(--color-text); cursor:pointer}
+.shop-row .box{flex-shrink:0; width:26px; height:26px; border-radius:8px; display:flex;
+  align-items:center; justify-content:center; border:2px solid var(--color-accent);
+  background:var(--color-accent); color:var(--color-bg)}
+.shop-row.off .box{background:none}
+.shop-row.off .t{color:color-mix(in srgb,var(--color-text) 45%,transparent)}
+.shop-row .open-link{font-size:14px; padding:8px 4px}
+.sec-count{font-family:var(--font-body,inherit); font-size:15px; font-weight:500;
+  color:color-mix(in srgb,var(--color-text) 60%,transparent)}
 .buy{list-style:none; margin:0; padding:0}
 .buy>li{padding:12px 0; border-bottom:1px solid var(--color-divider)}
 .buy-head{display:flex; flex-wrap:wrap; align-items:baseline; column-gap:12px;
@@ -276,7 +286,7 @@ details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:
 
 const CFG = { owner:"simpsonbm1", repo:"recipedb", branch:"main" };
 const LS  = { tok:"rdb.token", dev:"rdb.device", fav:"rdb.favorites", shop:"rdb.shopping",
-              ing:"rdb.shopping-ingredients" };
+              ing:"rdb.shopping-ingredients", skip:"rdb.shopping-unticked" };
 
 /* The two shared lists a recipe can be on, independently: favourites (the ones we like)
    and the shopping list (the ones we mean to cook next, whose ingredients get bought).
@@ -363,6 +373,11 @@ const S = {
   // Every recipe's ingredients with shopping names and parsed amounts, from
   // recipes/ingredients.json. Fetched only when the shopping list is opened.
   ingredients: ingCacheRead(),
+  // Recipes on the shopping list that THIS phone has unticked, so "What to buy" covers one
+  // trip rather than everything planned. Kept per phone on purpose (user, 2026-11-01): the
+  // list is shared, what this trip covers is not. Stored as the unticked ones so a recipe
+  // starts ticked — on this phone and on the other — the moment it is added.
+  unticked: skipRead(),
   ingLoaded: false,
   // Kept apart from S.error on purpose: on the list screen S.error MEANS "the recipes
   // could not be loaded" and replaces the whole grid. A heart that failed to save must
@@ -517,6 +532,8 @@ async function toggleListed(kind, id){
   // Optimistic: the button flips on the tap, because waiting on a round trip to see
   // whether your tap registered is what makes a phone feel broken.
   if(on) S[L.set].add(id); else S[L.set].delete(id);
+  // Added (again) to the shopping list: it starts ticked, whatever an earlier visit left.
+  if(kind==="shop" && on && S.unticked.delete(id)) skipWrite();
   listCacheWrite(kind); repaintLists();
   try{
     let sha=S[L.sha], set;
@@ -552,6 +569,18 @@ async function toggleListed(kind, id){
    a unit — the naming is decided on the machine, never here.
    Only the recipes on the list are mirrored into localStorage, so the list still
    reads in a shop with no signal. */
+function skipRead(){
+  try{ const v=JSON.parse(localStorage.getItem(LS.skip)||"[]");
+       return new Set(Array.isArray(v)?v.map(String):[]); }
+  catch{ return new Set(); }
+}
+function skipWrite(){
+  try{ localStorage.setItem(LS.skip, JSON.stringify([...S.unticked])); }catch{}
+}
+function toggleTicked(id){
+  if(S.unticked.has(id)) S.unticked.delete(id); else S.unticked.add(id);
+  skipWrite(); render();
+}
 function ingCacheRead(){
   try{ const v=JSON.parse(localStorage.getItem(LS.ing)||"{}"); return v&&typeof v==="object"?v:{}; }
   catch{ return {}; }
@@ -847,6 +876,7 @@ function filteredRows(){
 function favCount(){ return S.index.filter(r=>S.favorites.has(r.id)).length; }
 function shopRecipes(){ return S.index.filter(r=>S.shopping.has(r.id)); }
 function shopCount(){ return shopRecipes().length; }
+function tickedRecipes(){ return shopRecipes().filter(r=>!S.unticked.has(r.id)); }
 // Everyone who has submitted, with a count each. Empty until at least two people have -
 // the filter is pointless when every recipe came from the same person, and unattributed
 // recipes (captured before this existed, or from a phone nobody has named yet) are simply
@@ -1238,7 +1268,7 @@ function fmtAmount(qty, unit, max){
    ("Salt & pepper") sits under both, and never counts toward a number. */
 function shoppingGroups(){
   const groups={};
-  for(const r of shopRecipes()){
+  for(const r of tickedRecipes()){
     for(const ing of (S.ingredients[r.id]||[])){
       const shops=(ing.shop&&ing.shop.length)?ing.shop:[ing.name.toLowerCase()];
       for(const s of shops){
@@ -1272,7 +1302,8 @@ function shoppingView(){
       <h1 class="d-title">Shopping list</h1>
       <div class="empty"><div class="l1">Nothing on the shopping list.</div>
       <div>Tap the bag on a recipe to add it.</div></div></div>`;
-  const missing=recipes.filter(r=>!S.ingredients[r.id]);
+  const ticked=tickedRecipes();
+  const missing=ticked.filter(r=>!S.ingredients[r.id]);
   const groups=shoppingGroups();
   const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
   // The amount to buy sits on the item's own line, as large as its name. Underneath, one
@@ -1293,11 +1324,20 @@ function shoppingView(){
       ${favErrorLine()}
       <h1 class="d-title">Shopping list</h1>
       <h2 class="sec">Recipes</h2>
-      ${recipes.map(r=>`<div class="shop-row">
-        <button class="linkish" data-open="${esc(r.id)}">${esc(r.title)}</button>
+      <p class="finetext" style="margin:-4px 0 6px">Tick the ones you're shopping for now.</p>
+      ${recipes.map(r=>{ const on=!S.unticked.has(r.id);
+        // The whole row is the checkbox — a bigger target than a box, for messy hands.
+        // Opening the recipe moves to its own small link for that reason.
+        return `<div class="shop-row${on?"":" off"}">
+        <button class="tick" data-tick="${esc(r.id)}" role="checkbox" aria-checked="${on}">
+          <span class="box">${on?icon("check",16):""}</span><span class="t">${esc(r.title)}</span></button>
+        <button class="linkish open-link" data-open="${esc(r.id)}">open</button>
         <button class="btn btn-secondary" data-shop="${esc(r.id)}"
-          aria-label="Remove ${esc(r.title)} from the shopping list">${icon("x",16)}</button></div>`).join("")}
-      <h2 class="sec">What to buy</h2>
+          aria-label="Remove ${esc(r.title)} from the shopping list">${icon("x",16)}</button></div>`; }).join("")}
+      <h2 class="sec">What to buy${recipes.length>1
+        ?` <span class="sec-count">${ticked.length} of ${recipes.length} recipes</span>`:""}</h2>
+      ${!ticked.length?`<div class="empty"><div class="l1">No recipes ticked.</div>
+        <div>Tick one above to see what to buy.</div></div>`:""}
       ${missing.length && !S.ingLoaded ? `<div class="spin">Loading ingredients…</div>`
         : missing.length ? `<div class="err">No ingredient list yet for: ${
             missing.map(r=>esc(r.title)).join(", ")}.</div>` : ""}
@@ -1533,6 +1573,9 @@ function wireCards(root){
   root.querySelectorAll("[data-fav]").forEach(el=>{
     el.onclick=e=>{ e.stopPropagation(); e.preventDefault();
       toggleListed("fav", el.getAttribute("data-fav")); };
+  });
+  root.querySelectorAll("[data-tick]").forEach(el=>{
+    el.onclick=()=>toggleTicked(el.getAttribute("data-tick"));
   });
   root.querySelectorAll("[data-shop]").forEach(el=>{
     el.onclick=e=>{ e.stopPropagation(); e.preventDefault();
