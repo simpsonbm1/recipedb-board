@@ -194,10 +194,10 @@ textarea.input{min-height:88px; resize:vertical}
   font-size:19px; font-weight:600}
 /* A long amount ("for greasing the crockpot") wraps under the name instead of squeezing it. */
 .buy-total{margin-left:auto; text-align:right; color:var(--color-accent-700)}
-.buy-from{margin:6px 0 0; padding:0; list-style:none; font-size:15.5px; line-height:1.4;
-  color:color-mix(in srgb,var(--color-text) 72%,transparent)}
+.buy-from{margin:6px 0 0; padding:0 0 0 20px; list-style:disc; font-size:15.5px; line-height:1.4;
+  color:color-mix(in srgb,var(--color-text) 80%,transparent)}
 .buy-from li{margin:3px 0}
-.buy-amt{font-weight:600; color:var(--color-text)}
+.buy-rec{font-weight:600; color:var(--color-text)}
 /* The favourites filter uses the same pill as "Filter by tag", tinted with the accent so
    it reads as the heart's colour rather than another neutral toggle. */
 .fav-toggle.on{background:var(--color-accent-100); color:var(--color-accent-700)}
@@ -1276,16 +1276,19 @@ function shoppingView(){
   const groups=shoppingGroups();
   const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
   // The amount to buy sits on the item's own line, as large as its name. Underneath, one
-  // line per recipe says how much each needs; with a single recipe the line above already
-  // gave the amount, so only the recipe is named.
+  // line per recipe: the recipe in bold, then only what is specific to it — its amount when
+  // several recipes share the item, and its own wording when that says more than the item
+  // name ("Stove Top stuffing mix, chicken flavor" under "Stuffing mix"). With a single
+  // recipe the line above already gave the amount.
   const buy = groups.map(g=>`<li><div class="buy-head"><span>${esc(cap(g.name))}</span>${
       g.total?`<span class="buy-total">${esc(g.total)}</span>`:""}</div>
     <ul class="buy-from">${g.rows.map(x=>{
       // Show the recipe's own wording whenever it says more than the group name does.
       const own = x.name.toLowerCase()!==g.name ? x.name : "";
       const amt = g.rows.length===1 ? "" : (x.amount||"amount not given");
-      return `<li>${amt?`<span class="buy-amt">${esc(amt)}</span> · `:""}${
-        own?`${esc(own)} · `:""}${esc(x.recipe.title)}</li>`; }).join("")}</ul></li>`).join("");
+      const extra = [amt, own].filter(Boolean).join(" · ");
+      return `<li><span class="buy-rec">${esc(x.recipe.title)}</span>${
+        extra?` — ${esc(extra)}`:""}</li>`; }).join("")}</ul></li>`).join("");
   return back+`<div class="wrap wrap-detail">
       ${favErrorLine()}
       <h1 class="d-title">Shopping list</h1>
