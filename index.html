@@ -738,9 +738,10 @@ function parseRecipe(raw, card){
   const ingredients = (sec.ingredients||"").split(/\r?\n/).filter(l=>l.trim().startsWith("- "))
     .map(l=>{
       let t=l.replace(/^-\s+/,"");
-      const seen=t.match(/\*\(identified from video,\s*([^)]+)\)\*/);
-      t=t.replace(/\s*\*\(identified from video,[^)]+\)\*/,"").trim();
-      return { text:t, seen: seen?seen[1].trim():null };
+      // The timestamp is usually there but not always; "" means seen, with no time given.
+      const seen=t.match(/\*\(identified from video(?:,\s*([^)]+))?\)\*/);
+      t=t.replace(/\s*\*\(identified from video[^)]*\)\*/,"").trim();
+      return { text:t, seen: seen?(seen[1]||"").trim():null };
     });
   const steps = (sec.steps||"").split(/\r?\n/).map(l=>l.match(/^\d+\.\s+(.*)$/))
     .filter(Boolean).map(m=>m[1].trim());
@@ -1167,11 +1168,12 @@ function detailView(){
     <div><h3>Low confidence — this list may be incomplete</h3>
     <p>Some of this was hard to make out. Watch the video before you shop.</p></div></div>` : "";
   const ings = r.ingredients.map(i=>`<li><span class="dot"></span><span>${esc(i.text)}${
-    i.seen?`<span class="seen">${icon("eye",13)}seen in video ${esc(i.seen)}</span>`:""}</span></li>`).join("");
+    i.seen!=null?`<span class="seen">${icon("eye",13)}seen in video${
+      i.seen?" "+esc(i.seen):""}</span>`:""}</span></li>`).join("");
   const steps = r.steps.map(s=>`<li><span class="num"></span><span>${esc(s)}</span></li>`)
     .map((h,idx)=>h.replace('class="num">','class="num">'+(idx+1))).join("");
   const notes = r.notes?`<h2 class="sec">Notes</h2><p class="notes">${esc(r.notes)}</p>`:"";
-  const seen = r.ingredients.filter(i=>i.seen);
+  const seen = r.ingredients.filter(i=>i.seen!=null);
   const raw = r.raw?`<details class="raw"><summary>▸ Raw extraction — ${esc(r.rawLabel)}</summary>
     <pre>${esc(r.raw)}</pre></details>`:"";
   // A record's source is usually the video, but one written up from a roundup post's blog
@@ -1199,7 +1201,7 @@ function detailView(){
           :"The link is the written recipe itself — the exact quantities live there."}</p>
         <a href="${esc(r.source_url)}" target="_blank" rel="noopener">${esc(r.source_url)}</a>
         ${seen.length?`<p style="margin:10px 0 0;font-size:13.5px;color:var(--color-accent-2-700)">Visually identified: ${
-          seen.map(i=>esc(i.text.split("—")[0].trim())+" ("+esc(i.seen)+")").join(", ")}.</p>`:""}
+          seen.map(i=>esc(i.text.split("—")[0].trim())+(i.seen?" ("+esc(i.seen)+")":"")).join(", ")}.</p>`:""}
       </div>
       ${relatedBlock(r)}
       ${raw}
