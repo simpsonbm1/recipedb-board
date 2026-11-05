@@ -399,7 +399,21 @@ const S = {
   craftBy: "",        // submitter filter on the crafts tab
   currentCraft: null,
   craftCache: {},
+  // Where each list was scrolled when a card was opened, so Back lands on the same card.
+  listScroll: { list: 0, crafts: 0 },
+  backFrom: "",
 };
+
+/* Remember the list's position before leaving it for a detail page. */
+function saveListScroll(){
+  if(S.screen==="list" || S.screen==="crafts") S.listScroll[S.screen]=window.scrollY;
+}
+/* After render(): a list reached from a detail page goes back to where it was, anything
+   else starts at the top. */
+function restoreListScroll(screen){
+  const from=S.backFrom; S.backFrom="";
+  window.scrollTo(0, from ? (S.listScroll[screen]||0) : 0);
+}
 
 /* ── icons (Lucide paths, stroke 2.5) ── */
 const ICONS = {
@@ -646,6 +660,7 @@ async function loadCrafts(){
 
 async function openCraft(id){
   S.currentCraft = S.crafts.find(c=>c.id===id) || null;
+  saveListScroll();
   S.screen="craft-detail"; S.error=""; window.scrollTo(0,0); render();
   if(S.craftCache[id]){ render(); return; }
   try{
@@ -675,8 +690,10 @@ async function prefetchThumbs(){
 }
 
 async function openRecipe(id){
+  saveListScroll();
   S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.updText="";
   S.updQueued=false; S.delOpen=false; S.delQueued=false; S.error=""; S.favError=""; render();
+  window.scrollTo(0,0);
   if(S.recipeCache[id]){ S.recipe=S.recipeCache[id]; render(); return; }
   const card = S.index.find(r=>r.id===id);
   try{
@@ -1690,8 +1707,12 @@ function act(a){
       const el=document.getElementById("caprel"+(S.links.length-1)); if(el) el.focus();
       break;
     }
-    case "list":     S.tab="recipes"; S.screen="list"; S.error=""; S.favError=""; render(); break;
-    case "crafts":   S.tab="crafts"; S.screen="crafts"; S.error=""; render(); break;
+    case "list":     S.backFrom = S.screen==="detail" ? "detail" : "";
+                     S.tab="recipes"; S.screen="list"; S.error=""; S.favError=""; render();
+                     restoreListScroll("list"); break;
+    case "crafts":   S.backFrom = S.screen==="craft-detail" ? "craft-detail" : "";
+                     S.tab="crafts"; S.screen="crafts"; S.error=""; render();
+                     restoreListScroll("crafts"); break;
     case "tab-recipes": S.tab="recipes"; S.screen="list"; S.error=""; render(); break;
     case "tab-crafts":  S.tab="crafts"; S.screen="crafts"; S.error="";
                         if(!S.craftsLoaded) loadCrafts(); else render(); break;
