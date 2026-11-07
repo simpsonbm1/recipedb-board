@@ -265,6 +265,11 @@ ol.steps li .num{flex-shrink:0; width:32px; height:32px; border-radius:50%;
 .c-new textarea{margin-bottom:8px}
 .c-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
 .c-as{font-size:13px; color:color-mix(in srgb,var(--color-text) 55%,transparent); margin-right:auto}
+.card-favs,.d-favs{display:inline-flex; align-items:center; gap:5px; font-weight:600;
+  color:var(--color-accent-700)}
+.card-favs{font-size:12.5px; margin-top:-4px}
+.card-favs[hidden],.d-favs[hidden]{display:none}
+.d-favs{font-size:14px}
 .c-chip{display:inline-flex; align-items:center; gap:4px; margin-left:auto; font-weight:700;
   color:var(--color-accent-700)}
 .c-empty{font-size:15px; color:color-mix(in srgb,var(--color-text) 58%,transparent); margin:0 0 12px}
@@ -304,7 +309,7 @@ details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:
 const CFG = { owner:"simpsonbm1", repo:"recipedb", branch:"main" };
 const LS  = { tok:"rdb.token", dev:"rdb.device", fav:"rdb.favorites", shop:"rdb.shopping",
               ing:"rdb.shopping-ingredients", skip:"rdb.shopping-unticked",
-              com:"rdb.comments", users:"rdb.users" };
+              com:"rdb.comments", users:"rdb.users", favBy:"rdb.favorites-by" };
 
 /* The two shared lists a recipe can be on, independently: favourites (the ones we like)
    and the shopping list (the ones we mean to cook next, whose ingredients get bought).
@@ -383,6 +388,9 @@ const S = {
      still shows the right hearts. */
   favorites: listCacheRead("fav"),   // last known list, so the hearts paint before the fetch lands
   favSha: null,      // contents-API sha of favorites.json; null = never fetched, or absent
+  // Who hearted each recipe: recipe id -> device keys. A recipe in `favorites` with no entry
+  // here was hearted before names were recorded. See toggleFav for the rules.
+  favBy: favByCacheRead(),
   favOnly: false,    // the list is filtered to favourites
   comOnly: false,    // the list is filtered to recipes somebody has commented on
   // The shopping list: same mechanics as favourites, in shopping.json.
@@ -547,24 +555,45 @@ function listCacheRead(kind){
 }
 function listCacheWrite(kind){
   try{ localStorage.setItem(LISTS[kind].ls, JSON.stringify([...S[LISTS[kind].set]])); }catch{}
+  if(kind==="fav") try{ localStorage.setItem(LS.favBy, JSON.stringify(S.favBy)); }catch{}
+}
+function favByCacheRead(){
+  try{ const v=JSON.parse(localStorage.getItem(LS.favBy)||"{}"); return v&&typeof v==="object"?v:{}; }
+  catch{ return {}; }
 }
 function parseList(kind, text){
   const j=JSON.parse(text);
   const list=Array.isArray(j)?j:(j[LISTS[kind].key]||[]);
   return new Set(list.map(String));
 }
-function listBody(kind, set){
-  return JSON.stringify({ [LISTS[kind].key]:[...set].sort() }, null, 2)+"\n";
+// favorites.json's "by" block: { "0048": ["8835318ee497", ...] }.
+function parseFavBy(text){
+  const j=JSON.parse(text), by=j&&!Array.isArray(j)&&j.by;
+  const out={};
+  if(by && typeof by==="object") for(const [id,keys] of Object.entries(by))
+    if(Array.isArray(keys) && keys.length) out[id]=keys.map(String);
+  return out;
+}
+function listBody(kind, set, by){
+  const o={ [LISTS[kind].key]:[...set].sort() };
+  if(kind==="fav"){
+    const b={};
+    for(const id of Object.keys(by||{}).sort()) if(set.has(id) && by[id].length) b[id]=by[id];
+    o.by=b;
+  }
+  return JSON.stringify(o, null, 2)+"\n";
 }
 async function loadList(kind){
   const L=LISTS[kind];
   try{
     const { text, sha } = await getFile(L.file);
     S[L.set] = parseList(kind, text); S[L.sha] = sha;
+    if(kind==="fav") S.favBy = parseFavBy(text);
     listCacheWrite(kind);
   }catch(e){
     // 404 is the ordinary state until the first tap: nothing has been added yet.
-    if(e.status===404){ S[L.set]=new Set(); S[L.sha]=null; listCacheWrite(kind); }
+    if(e.status===404){ S[L.set]=new Set(); S[L.sha]=null; if(kind==="fav") S.favBy={};
+      listCacheWrite(kind); }
     // Anything else (offline, rate limit) leaves the cached copy in place rather than
     // wiping marks the user can see.
   }
@@ -574,7 +603,82 @@ async function loadList(kind){
    against what we loaded minutes ago — otherwise a tap on one phone silently undoes
    whatever the other phone did in between. The single add-or-remove is re-applied to the
    fresh copy, so two people changing different recipes at once both stick. */
+/* ── who hearted what ──
+   The user's rules (2026-11-07): any one heart puts a recipe in Favourites for everyone and
+   shows the heart solid. Each person can remove only their own heart, and a recipe leaves
+   Favourites when its last heart goes. A heart from before names were recorded has nobody's
+   name on it; the first person to tap it has it put in their name and it stays a favourite.
+   "Own" means the person, not the phone: Ben's hearts are his from any of his phones. A
+   phone nobody has named yet counts as its own person until it is named. */
+function personOf(key){ return (S.users[key]||"").trim() || key; }
+function myPerson(){ return personOf(deviceKey()); }
+function heartedByMe(id){ return (S.favBy[id]||[]).some(k=>personOf(k)===myPerson()); }
+// Names to show beside a heart, one per person, in the order they hearted.
+function heartNames(id){
+  const out=[];
+  for(const k of (S.favBy[id]||[])){ const n=nameOf(k); if(!out.includes(n)) out.push(n); }
+  return out;
+}
+// Apply this phone's tap to a favourites set + by-map, in place. Returns true if the recipe
+// is now hearted by this person.
+function applyHeartTap(set, by, id){
+  const me=myPerson(), key=deviceKey();
+  const keys = Array.isArray(by[id]) ? by[id] : [];
+  if(!set.has(id)){ set.add(id); by[id]=[key]; return true; }       // first heart
+  if(!keys.length){ by[id]=[key]; return true; }                      // old heart: claim it
+  if(keys.some(k=>personOf(k)===me)){                                  // mine: remove mine
+    const rest=keys.filter(k=>personOf(k)!==me);
+    if(rest.length) by[id]=rest; else { delete by[id]; set.delete(id); }
+    return false;
+  }
+  by[id]=keys.concat(key); return true;                                // someone else's: add mine
+}
+async function toggleFav(id){
+  if(S.busy.fav) return;
+  S.busy.fav=true; S.favError="";
+  const before={ set:new Set(S.favorites), by:JSON.parse(JSON.stringify(S.favBy)) };
+  // Optimistic, as before: the tap shows at once.
+  applyHeartTap(S.favorites, S.favBy, id);
+  listCacheWrite("fav"); repaintLists(); repaintHeartNames();
+  try{
+    let set, by, sha;
+    try{
+      const cur=await getFile(LISTS.fav.file);
+      set=parseList("fav", cur.text); by=parseFavBy(cur.text); sha=cur.sha;
+    }catch(e){
+      if(e.status!==404) throw e;
+      set=new Set(); by={}; sha=null;
+    }
+    // Re-applied to the fresh copy, so a heart added on the other phone a moment ago stays.
+    const on=applyHeartTap(set, by, id);
+    const put=await gh(contentsUrl(LISTS.fav.file), { method:"PUT", body:JSON.stringify({
+      message:`board: ${on?"favorite":"unfavorite"} ${id}`,
+      content:b64encode(listBody("fav", set, by)), branch:CFG.branch, ...(sha?{sha}:{}) }) });
+    S.favorites=set; S.favBy=by; S.favSha=put.content?.sha || sha;
+    listCacheWrite("fav");
+  }catch(e){
+    S.favorites=before.set; S.favBy=before.by; listCacheWrite("fav");
+    S.favError=LISTS.fav.fail+e.message;
+  }finally{
+    S.busy.fav=false; render();
+  }
+}
+// Update the "♥ Angela, Ben" lines already on screen without a full rebuild.
+function repaintHeartNames(){
+  document.querySelectorAll("[data-favnames]").forEach(el=>{
+    el.outerHTML = heartNamesHTML(el.getAttribute("data-favnames"), el.classList.contains("d-favs"));
+  });
+}
+function heartNamesHTML(id, detail=false){
+  const names=S.favorites.has(id) ? heartNames(id) : [];
+  const cls=detail?"d-favs":"card-favs";
+  if(!names.length) return `<span class="${cls}" data-favnames="${esc(id)}" hidden></span>`;
+  return `<span class="${cls}" data-favnames="${esc(id)}">${icon("heart",13,"currentColor")}${
+    detail?"Hearted by ":""}${esc(names.join(", "))}</span>`;
+}
+
 async function toggleListed(kind, id){
+  if(kind==="fav") return toggleFav(id);
   const L=LISTS[kind];
   if(S.busy[kind]) return;
   const on = !S[L.set].has(id);
@@ -1359,11 +1463,16 @@ function craftDetailView(){
 // The heart is a sibling of the card, not a child of it: the card is a <button>, and a
 // button inside a button is invalid and unclickable on some phones. So the two sit in a
 // positioned wrapper and the heart floats over the photograph.
+// Solid whenever anyone has hearted it (user, 2026-11-07); the label says what a tap does
+// for THIS person, since the look alone cannot.
+function heartTitle(id){
+  return heartedByMe(id) ? "Remove your heart"
+       : S.favorites.has(id) ? "Add your heart" : "Add to favourites";
+}
 function heartHTML(id, size=18, extra=""){
   const on = S.favorites.has(id);
   return `<button class="heart${on?" on":""}${extra}" data-fav="${esc(id)}"
-    aria-pressed="${on}" title="${on?"Remove from favourites":"Add to favourites"}"
-    aria-label="${on?"Remove from favourites":"Add to favourites"}"
+    aria-pressed="${on}" title="${heartTitle(id)}" aria-label="${heartTitle(id)}"
     >${icon("heart",size,on?"currentColor":"none")}</button>`;
 }
 function bagTitle(on){ return on?"Remove from the shopping list":"Add to the shopping list"; }
@@ -1395,6 +1504,7 @@ function cardHTML(r){
       <h3 class="card-title">${esc(r.title)}</h3>
       <div class="card-stamp">${icon("cal",14)}Added ${esc(shortDate(r.added))||"—"}${
         r.captured_by?` · by ${esc(r.captured_by)}`:""}${commentChip(r.id)}</div>
+      ${heartNamesHTML(r.id)}
       ${tags?`<div class="card-tags">${tags}</div>`:""}
     </div></button>
     ${bagHTML(r.id)}${heartHTML(r.id)}
@@ -1432,7 +1542,8 @@ function detailView(){
       <h1 class="d-title">${esc(r.title)}</h1>
       <div class="d-meta">${esc(r.site)} · ${esc(r.uploader)} · added ${esc(shortDate(r.added))}${
         r.captured_by?` · sent in by <button class="linkish" data-by="${esc(r.captured_by)}"
-          title="Show everything ${esc(r.captured_by)} sent in">${esc(r.captured_by)}</button>`:""} ${tags}</div>
+          title="Show everything ${esc(r.captured_by)} sent in">${esc(r.captured_by)}</button>`:""}
+        ${heartNamesHTML(r.id, true)} ${tags}</div>
       <a class="btn btn-primary watch" href="${esc(r.source_url)}" target="_blank" rel="noopener">
         ${icon("ext")}${srcIsVideo?"Watch the original":"Read the recipe"}</a>
       ${banner}
@@ -1956,7 +2067,7 @@ function repaintLists(){
     const big=el.classList.contains("heart-lg");
     el.classList.toggle("on",on);
     el.setAttribute("aria-pressed",String(on));
-    el.title = on?"Remove from favourites":"Add to favourites";
+    el.title = el.ariaLabel = heartTitle(el.getAttribute("data-fav"));
     el.innerHTML = icon("heart",big?22:18,on?"currentColor":"none");
   });
   document.querySelectorAll("[data-shop].bag").forEach(el=>{
