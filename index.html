@@ -251,6 +251,23 @@ ol.steps li .num{flex-shrink:0; width:32px; height:32px; border-radius:50%;
 .kicker{font-family:var(--font-heading); font-size:15px; text-transform:uppercase;
   letter-spacing:0.03em; color:var(--color-accent-700); margin-bottom:8px}
 .source-card a{word-break:break-all}
+/* ── comments ── */
+.comments{list-style:none; margin:0 0 14px; padding:0; display:flex; flex-direction:column; gap:12px}
+.comment{background:var(--color-surface); border-radius:18px; padding:13px 16px}
+.c-head{display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 10px; font-size:13.5px;
+  color:color-mix(in srgb,var(--color-text) 58%,transparent); margin-bottom:5px}
+.c-who{font-weight:700; font-size:15px; color:var(--color-text)}
+.c-text{margin:0; font-size:16px; white-space:pre-wrap; overflow-wrap:anywhere}
+.c-acts{display:flex; gap:18px; margin-top:8px; font-size:14px}
+.c-acts .linkish{min-height:32px; color:var(--color-accent-700)}
+.c-acts .linkish.del{color:#b23b2e}
+.c-edit textarea{margin-bottom:10px}
+.c-new textarea{margin-bottom:8px}
+.c-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+.c-as{font-size:13px; color:color-mix(in srgb,var(--color-text) 55%,transparent); margin-right:auto}
+.c-chip{display:inline-flex; align-items:center; gap:4px; margin-left:auto; font-weight:700;
+  color:var(--color-accent-700)}
+.c-empty{font-size:15px; color:color-mix(in srgb,var(--color-text) 58%,transparent); margin:0 0 12px}
 details.raw{background:var(--color-neutral-100); border-radius:18px; padding:14px 16px; margin-top:20px}
 details.raw summary{cursor:pointer; font-weight:600; font-size:14px}
 details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:12px 0 0;
@@ -286,7 +303,8 @@ details.raw pre{white-space:pre-wrap; font-size:12.5px; line-height:1.5; margin:
 
 const CFG = { owner:"simpsonbm1", repo:"recipedb", branch:"main" };
 const LS  = { tok:"rdb.token", dev:"rdb.device", fav:"rdb.favorites", shop:"rdb.shopping",
-              ing:"rdb.shopping-ingredients", skip:"rdb.shopping-unticked" };
+              ing:"rdb.shopping-ingredients", skip:"rdb.shopping-unticked",
+              com:"rdb.comments", users:"rdb.users" };
 
 /* The two shared lists a recipe can be on, independently: favourites (the ones we like)
    and the shopping list (the ones we mean to cook next, whose ingredients get bought).
@@ -384,6 +402,22 @@ const S = {
   // not blank the list someone is reading. Serves the shopping list toggle too.
   favError: "",
 
+  /* ── comments ────────────────────────────────────────────────────────────
+     Notes people leave on a recipe ("swapped the cream for half-and-half, better"),
+     each attributed to whoever posted it. They live in comments.json in the private
+     repo, outside the records, for the same reason favourites do: posting a comment is
+     not editing a recipe, and it must reach the other phones without a machine
+     rebuilding the index. Attribution is the device key, never a typed name — the name
+     comes from users.json, so a phone named later is named on its old comments too. */
+  comments: comCacheRead(),   // recipe id -> [{id, by, at, text, edited?}], oldest first
+  comSha: null,
+  users: usersCacheRead(),    // device key -> name, from users.json
+  comDraft: "",               // the new-comment box on the open recipe
+  comEditing: "",             // id of the comment being edited on this phone, "" = none
+  comEditText: "",
+  comBusy: false,             // a comment write is in flight
+  comError: "",
+
   /* ── crafts: the second section ──────────────────────────────────────────
      Sewing, quilting and jewellery technique videos. NOT recipes with materials
      instead of ingredients — measured against eleven real ones, they are techniques
@@ -428,6 +462,7 @@ const ICONS = {
   trash:"M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M10 11v6M14 11v6",
   filter:"M22 3H2l8 9.46V19l4 2v-8.54L22 3z", x:"M18 6L6 18M6 6l12 12",
   bag:"M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4zM3 6h18M16 10a4 4 0 01-8 0",
+  msg:"M7.9 20A9 9 0 1 0 4 16.1L2 22z",
   heart:"M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0016.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 002 8.5c0 2.3 1.5 4.05 3 5.5l7 7z",
 };
 // `fill` is what makes a heart read as on or off — an outline and a solid shape, which is
@@ -612,6 +647,142 @@ async function loadIngredients(){
   if(S.screen==="shopping") render();
 }
 
+/* ── comments ────────────────────────────────────────────────────────────────
+   comments.json, in the private repo, written by the board only:
+
+     { "comments": { "0001": [ { "id":"3f9a1c2b", "by":"8835318ee497",
+                                 "at":"2026-11-07T18:05:03Z", "text":"…",
+                                 "edited":"2026-11-07T18:09:40Z" } ] } }
+
+   `by` is the posting phone's device key and is the only thing that decides who may edit
+   or delete a comment: the phone that posted it. Mirrored into localStorage so a recipe
+   opened with no signal still shows what was said about it. */
+function comCacheRead(){
+  try{ const v=JSON.parse(localStorage.getItem(LS.com)||"{}"); return v&&typeof v==="object"?v:{}; }
+  catch{ return {}; }
+}
+function comCacheWrite(){ try{ localStorage.setItem(LS.com, JSON.stringify(S.comments)); }catch{} }
+function usersCacheRead(){
+  try{ const v=JSON.parse(localStorage.getItem(LS.users)||"{}"); return v&&typeof v==="object"?v:{}; }
+  catch{ return {}; }
+}
+function parseComments(text){
+  const j=JSON.parse(text); const c=j&&j.comments;
+  return c&&typeof c==="object"&&!Array.isArray(c) ? c : {};
+}
+function commentsBody(all){
+  const out={};
+  for(const id of Object.keys(all).sort()) if((all[id]||[]).length) out[id]=all[id];
+  return JSON.stringify({ comments: out }, null, 2)+"\n";
+}
+async function loadComments(){
+  try{
+    const { text, sha } = await getFile("comments.json");
+    S.comments = parseComments(text); S.comSha = sha; comCacheWrite();
+  }catch(e){
+    // 404 until the first comment is posted. Anything else keeps the cached copy.
+    if(e.status===404){ S.comments={}; S.comSha=null; comCacheWrite(); }
+  }
+}
+// Names for device keys. The same table the PC uses to attribute submissions.
+async function loadUsers(){
+  try{
+    const { text } = await getFile("users.json");
+    const k = JSON.parse(text).keys;
+    if(k && typeof k==="object"){ S.users=k; try{ localStorage.setItem(LS.users, JSON.stringify(k)); }catch{} }
+  }catch{ /* keep the cached names */ }
+}
+function nameOf(key){ return (S.users[key]||"").trim() || "Someone"; }
+function commentsFor(id){ const c=S.comments[id]; return Array.isArray(c)?c:[]; }
+function commentCount(id){ return commentsFor(id).length; }
+// Lowercased comment text for one recipe, so search finds what people said about it.
+function commentHay(id){ return commentsFor(id).map(c=>String(c.text||"")).join("\n").toLowerCase(); }
+function newCommentId(){
+  const b=new Uint8Array(4); crypto.getRandomValues(b);
+  return Array.from(b, x=>x.toString(16).padStart(2,"0")).join("");
+}
+function isoNow(){ return new Date().toISOString().replace(/\.\d{3}Z$/,"Z"); }
+
+/* Every change is a read-modify-write against comments.json as it is on GitHub now, so a
+   comment posted on the other phone a moment ago is kept, never overwritten. `change`
+   edits the fresh copy and returns an error message, or "" when it applied. If the other
+   phone wrote in the gap between the read and the write, GitHub refuses the stale write
+   (409) and the whole thing is redone once against the newer copy. */
+async function mutateComments(change, message){
+  for(let attempt=0; ; attempt++){
+    let all, sha;
+    try{
+      const cur = await getFile("comments.json");
+      all = parseComments(cur.text); sha = cur.sha;
+    }catch(e){
+      if(e.status!==404) throw e;
+      all = {}; sha = null;                       // the first comment ever
+    }
+    const why = change(all);
+    if(why){ const e=new Error(why); e.status=0; throw e; }
+    try{
+      const put = await gh(contentsUrl("comments.json"), { method:"PUT", body:JSON.stringify({
+        message:`board: ${message}`, content:b64encode(commentsBody(all)), branch:CFG.branch,
+        ...(sha?{sha}:{}) }) });
+      S.comments = all; S.comSha = put.content?.sha || sha; comCacheWrite();
+      return;
+    }catch(e){
+      if((e.status===409 || e.status===422) && attempt===0) continue;
+      throw e;
+    }
+  }
+}
+
+async function postComment(){
+  const id=S.currentId, text=S.comDraft.trim();
+  if(!text || S.comBusy) return;
+  S.comBusy=true; S.comError=""; repaintComments(true);
+  try{
+    const c = { id:newCommentId(), by:deviceKey(), at:isoNow(), text };
+    await mutateComments(all=>{ (all[id] = Array.isArray(all[id])?all[id]:[]).push(c); return ""; },
+                         `comment on ${id}`);
+    S.comDraft="";
+  }catch(e){ S.comError = "That comment didn't post: "+e.message; }
+  finally{ S.comBusy=false; repaintComments(true); }
+}
+
+// Finds this phone's own comment in a fresh copy, or says why it can't be changed.
+function ownComment(all, recipeId, commentId){
+  const list = Array.isArray(all[recipeId]) ? all[recipeId] : [];
+  const i = list.findIndex(c=>c && c.id===commentId);
+  if(i<0) return { why:"it has already been deleted" };
+  if(list[i].by!==deviceKey()) return { why:"only the phone that posted it can change it" };
+  return { list, i };
+}
+
+async function saveCommentEdit(){
+  const id=S.currentId, cid=S.comEditing, text=S.comEditText.trim();
+  if(!cid || !text || S.comBusy) return;
+  S.comBusy=true; S.comError=""; repaintComments(true);
+  try{
+    await mutateComments(all=>{
+      const f=ownComment(all, id, cid); if(f.why) return f.why;
+      f.list[f.i] = Object.assign({}, f.list[f.i], { text, edited:isoNow() }); return "";
+    }, `edit comment on ${id}`);
+    S.comEditing=""; S.comEditText="";
+  }catch(e){ S.comError = "That edit didn't save: "+e.message; }
+  finally{ S.comBusy=false; repaintComments(true); }
+}
+
+async function deleteComment(cid){
+  const id=S.currentId;
+  if(S.comBusy || !confirm("Delete this comment? Everyone stops seeing it.")) return;
+  S.comBusy=true; S.comError=""; repaintComments(true);
+  try{
+    await mutateComments(all=>{
+      const f=ownComment(all, id, cid); if(f.why) return f.why;
+      f.list.splice(f.i,1); return "";
+    }, `delete comment on ${id}`);
+    if(S.comEditing===cid){ S.comEditing=""; S.comEditText=""; }
+  }catch(e){ S.comError = "That comment wasn't deleted: "+e.message; }
+  finally{ S.comBusy=false; repaintComments(true); }
+}
+
 async function loadIndex(){
   S.loading=true; S.error=""; render();
   try{
@@ -622,6 +793,9 @@ async function loadIndex(){
     loadQueue(idx).then(render);
     loadList("fav").then(render);
     loadList("shop").then(render);
+    // Comment counts sit on the cards, so a repaint once they land; names likewise.
+    loadComments().then(refreshForComments);
+    loadUsers().then(refreshForComments);
     prefetchThumbs();
   }catch(e){
     S.loading=false;
@@ -692,8 +866,11 @@ async function prefetchThumbs(){
 async function openRecipe(id){
   saveListScroll();
   S.currentId=id; S.screen="detail"; S.recipe=null; S.updOpen=false; S.updUrl=""; S.updText="";
-  S.updQueued=false; S.delOpen=false; S.delQueued=false; S.error=""; S.favError=""; render();
+  S.updQueued=false; S.delOpen=false; S.delQueued=false; S.error=""; S.favError="";
+  S.comDraft=""; S.comEditing=""; S.comEditText=""; S.comError=""; render();
   window.scrollTo(0,0);
+  // Re-read the comments on every open, so one posted on the other phone a minute ago shows.
+  loadComments().then(()=>repaintComments(false));
   if(S.recipeCache[id]){ S.recipe=S.recipeCache[id]; render(); return; }
   const card = S.index.find(r=>r.id===id);
   try{
@@ -883,7 +1060,7 @@ function matchesTerms(hay, terms){
 function filteredRows(){
   const terms=searchTerms(S.query.trim());
   return S.index.filter(r =>
-    matchesTerms(r.search, terms) &&
+    (matchesTerms((r.search||"")+"\n"+commentHay(r.id), terms)) &&
     (!S.favOnly || S.favorites.has(r.id)) &&
     (!S.activeTag || (r.tags||[]).includes(S.activeTag)) &&
     (!S.activeBy || (r.captured_by||"") === S.activeBy));
@@ -1185,6 +1362,14 @@ function bagHTML(id, size=18, extra=""){
     >${icon("bag",size,on?"currentColor":"none")}</button>`;
 }
 
+// "💬 2" on a card: someone has said something about this recipe.
+function commentChip(id){
+  const n=commentCount(id);
+  if(!n) return "";
+  return `<span class="c-chip" title="${n} comment${n===1?"":"s"}" aria-label="${n} comment${
+    n===1?"":"s"}">${icon("msg",14)}${n}</span>`;
+}
+
 function cardHTML(r){
   const warn = r.confidence==="low"
     ? `<span class="chip-warn">${icon("warn",13)}Check video</span>` : "";
@@ -1197,7 +1382,7 @@ function cardHTML(r){
     <div class="card-body">
       <h3 class="card-title">${esc(r.title)}</h3>
       <div class="card-stamp">${icon("cal",14)}Added ${esc(shortDate(r.added))||"—"}${
-        r.captured_by?` · by ${esc(r.captured_by)}`:""}</div>
+        r.captured_by?` · by ${esc(r.captured_by)}`:""}${commentChip(r.id)}</div>
       ${tags?`<div class="card-tags">${tags}</div>`:""}
     </div></button>
     ${bagHTML(r.id)}${heartHTML(r.id)}
@@ -1242,6 +1427,7 @@ function detailView(){
       <h2 class="sec">Ingredients</h2><ul class="ings">${ings}</ul>
       <h2 class="sec">Steps</h2><ol class="steps">${steps}</ol>
       ${notes}
+      ${commentsBlock(r)}
       <div class="source-card"><div class="kicker">Source</div>
         <p style="margin:0 0 8px">${srcIsVideo
           ?"The link is the fallback for anything the video showed but never said out loud — keep it."
@@ -1254,6 +1440,71 @@ function detailView(){
       ${raw}
       ${deleteBlock(r)}
     </div>`;
+}
+
+/* ══ comments on a recipe ══
+   Oldest first, like a conversation. Each shows who posted it and when; the phone that
+   posted one can edit or delete it, and nobody else sees those buttons. */
+function commentDate(iso){
+  const d=shortDate(iso); if(!d) return "";
+  const y=String(iso).slice(0,4);
+  return y && y!==String(new Date().getUTCFullYear()) ? `${d}, ${y}` : d;
+}
+function commentsBlock(r){
+  const list=commentsFor(r.id), mine=deviceKey(), busy=S.comBusy;
+  const items=list.map(c=>{
+    const own = c.by===mine;
+    if(own && S.comEditing===c.id){
+      return `<li class="comment c-edit">
+        <textarea class="input" id="comedit" rows="4">${esc(S.comEditText)}</textarea>
+        <div class="c-row">
+          <button class="btn btn-secondary" data-act="cancel-com-edit"${busy?" disabled":""}>Cancel</button>
+          <button class="btn btn-primary" data-act="save-com-edit"${busy?" disabled":""}>${
+            icon("check")}${busy?"Saving…":"Save"}</button>
+        </div></li>`;
+    }
+    return `<li class="comment">
+      <div class="c-head"><span class="c-who">${esc(nameOf(c.by))}</span><span>${
+        esc(commentDate(c.at))}${c.edited?" · edited":""}</span></div>
+      <p class="c-text">${esc(c.text)}</p>
+      ${own?`<div class="c-acts">
+        <button class="linkish" data-com-edit="${esc(c.id)}"${busy?" disabled":""}>Edit</button>
+        <button class="linkish del" data-com-del="${esc(c.id)}"${busy?" disabled":""}>Delete</button>
+      </div>`:""}</li>`;
+  }).join("");
+  const named = (S.users[mine]||"").trim();
+  return `<div id="comments">
+    <h2 class="sec">Comments${list.length?` <span class="sec-count">${list.length}</span>`:""}</h2>
+    ${S.comError?`<div class="err">${esc(S.comError)}</div>`:""}
+    ${list.length?`<ul class="comments">${items}</ul>`
+      :`<p class="c-empty">Nothing yet. Tried it, or changed something? Say so here.</p>`}
+    <div class="c-new">
+      <textarea class="input" id="comnew" rows="3"
+        placeholder="e.g. Used half-and-half instead of cream — liked it better">${esc(S.comDraft)}</textarea>
+      <div class="c-row">
+        <span class="c-as">Posting as ${esc(named||"Someone")}</span>
+        <button class="btn btn-primary" data-act="post-com"${busy?" disabled":""}>${
+          icon("plus")}${busy&&!S.comEditing?"Posting…":"Post"}</button>
+      </div>
+    </div></div>`;
+}
+
+/* Redraw just the comments section, so a background refresh never wipes what someone is
+   typing in another box. A refresh that arrives while the caret is inside the section is
+   skipped (`force` false): their own post re-reads the file anyway. The cards' counts are
+   on the list screen, which rebuilds itself whenever it is shown. */
+function repaintComments(force){
+  if(S.screen!=="detail" || !S.recipe) return;
+  const el=document.getElementById("comments");
+  if(!el) return;
+  if(!force && el.contains(document.activeElement)) return;
+  el.outerHTML = commentsBlock(S.recipe);
+  wire();
+}
+// After a background load: repaint whichever screen shows comments.
+function refreshForComments(){
+  if(S.screen==="list") repaintList();
+  else repaintComments(false);
 }
 
 /* ══ shopping list ══ */
@@ -1645,6 +1896,18 @@ function wire(){
   const ct=document.getElementById("captext"); if(ct) ct.oninput=()=>S.text=ct.value;
   const uu=document.getElementById("updurl"); if(uu) uu.oninput=()=>S.updUrl=uu.value;
   const ut=document.getElementById("updtext"); if(ut) ut.oninput=()=>S.updText=ut.value;
+  // Comments: typing goes straight to state without a re-render, so the caret stays put.
+  const cnw=document.getElementById("comnew"); if(cnw) cnw.oninput=()=>S.comDraft=cnw.value;
+  const ced=document.getElementById("comedit"); if(ced) ced.oninput=()=>S.comEditText=ced.value;
+  document.querySelectorAll("[data-com-edit]").forEach(el=>el.onclick=()=>{
+    const c=commentsFor(S.currentId).find(x=>x.id===el.getAttribute("data-com-edit"));
+    if(!c || S.comBusy) return;
+    S.comEditing=c.id; S.comEditText=c.text||""; S.comError=""; repaintComments(true);
+    const t=document.getElementById("comedit");
+    if(t){ t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+  });
+  document.querySelectorAll("[data-com-del]").forEach(el=>el.onclick=()=>
+    deleteComment(el.getAttribute("data-com-del")));
 }
 
 // Live search without losing input focus: repaint only the count + grid (respecting the
@@ -1729,6 +1992,9 @@ function act(a){
     case "open-del":   S.delOpen=true; S.error=""; render(); break;
     case "cancel-del": S.delOpen=false; S.error=""; render(); break;
     case "do-del":     submitDelete(); break;
+    case "post-com":   postComment(); break;
+    case "save-com-edit": saveCommentEdit(); break;
+    case "cancel-com-edit": S.comEditing=""; S.comEditText=""; S.comError=""; repaintComments(true); break;
     case "save-token": {
       const v=document.getElementById("tok").value.trim();
       if(!v) return;
