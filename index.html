@@ -384,6 +384,7 @@ const S = {
   favorites: listCacheRead("fav"),   // last known list, so the hearts paint before the fetch lands
   favSha: null,      // contents-API sha of favorites.json; null = never fetched, or absent
   favOnly: false,    // the list is filtered to favourites
+  comOnly: false,    // the list is filtered to recipes somebody has commented on
   // The shopping list: same mechanics as favourites, in shopping.json.
   shopping: listCacheRead("shop"),
   shopSha: null,
@@ -1062,6 +1063,7 @@ function filteredRows(){
   return S.index.filter(r =>
     (matchesTerms((r.search||"")+"\n"+commentHay(r.id), terms)) &&
     (!S.favOnly || S.favorites.has(r.id)) &&
+    (!S.comOnly || commentCount(r.id)>0) &&
     (!S.activeTag || (r.tags||[]).includes(S.activeTag)) &&
     (!S.activeBy || (r.captured_by||"") === S.activeBy));
 }
@@ -1089,10 +1091,11 @@ function tagCounts(){
 }
 // The count line reflects whichever filters are active.
 function listCountLine(rows){
-  if(!S.query.trim() && !S.activeTag && !S.activeBy && !S.favOnly)
+  if(!S.query.trim() && !S.activeTag && !S.activeBy && !S.favOnly && !S.comOnly)
     return `${S.index.length} recipe${S.index.length===1?"":"s"}`;
   const bits=[];
   if(S.favOnly) bits.push("favourites");
+  if(S.comOnly) bits.push("with comments");
   if(S.activeBy) bits.push(`from ${esc(S.activeBy)}`);
   if(S.activeTag) bits.push(`tagged “${esc(S.activeTag)}”`);
   if(S.query.trim()) bits.push(`“${esc(S.query.trim())}”`);
@@ -1131,7 +1134,7 @@ function listView(){
   let body;
   if(S.loading) body=`<div class="spin">Loading your recipes…</div>`;
   else if(S.error) body=`<div class="err">${esc(S.error)}</div>`;
-  else if(!rows.length && (S.query.trim()||S.activeTag||S.activeBy||S.favOnly)) body=`<div class="empty">
+  else if(!rows.length && (S.query.trim()||S.activeTag||S.activeBy||S.favOnly||S.comOnly)) body=`<div class="empty">
     <div class="l1">Nothing matches that yet.</div>
     <div>Every word has to appear — try dropping one, or clear a filter.</div></div>`;
   else if(!rows.length) body=`<div class="empty"><div class="l1">No recipes yet.</div>
@@ -1161,6 +1164,15 @@ function listView(){
         <span class="tag-count">${nfav}</span></button>`
     : "";
 
+  // Recipes somebody has said something about. Hidden until there is at least one, like
+  // the favourites toggle, so it never offers an empty list.
+  const ncom = S.index.filter(r=>commentCount(r.id)>0).length;
+  const comToggle = (ncom || S.comOnly)
+    ? `<button class="filter-toggle fav-toggle${S.comOnly?" on":""}" data-act="toggle-com"
+        aria-pressed="${S.comOnly}">${icon("msg",15,S.comOnly?"currentColor":"none")}Comments
+        <span class="tag-count">${ncom}</span></button>`
+    : "";
+
   // The shopping list opens its own screen rather than filtering this one: what it is for
   // is the merged list of what to buy, not the cards. Hidden until something is on it.
   const nshop = shopCount();
@@ -1170,7 +1182,7 @@ function listView(){
     : "";
 
   const filterbar = `<div class="filterbar">
-    ${favToggle}${shopToggle}
+    ${favToggle}${comToggle}${shopToggle}
     <button class="filter-toggle${S.tagPanelOpen?" on":""}" data-act="toggle-tags">
       ${icon("filter",15)}${S.tagPanelOpen?"Hide tags":"Filter by tag"}</button>
     ${S.activeTag ? `<button class="tag tag-accent tag-btn" data-tag="${esc(S.activeTag)}"
@@ -1502,8 +1514,12 @@ function repaintComments(force){
   wire();
 }
 // After a background load: repaint whichever screen shows comments.
+// The Comments filter button lives in the header, which repaintList leaves alone, so the
+// list is rebuilt whole unless someone is typing in the search box.
 function refreshForComments(){
-  if(S.screen==="list") repaintList();
+  if(S.screen==="list"){
+    if(document.activeElement && document.activeElement.id==="q") repaintList(); else render();
+  }
   else repaintComments(false);
 }
 
@@ -1981,6 +1997,7 @@ function act(a){
                         if(!S.craftsLoaded) loadCrafts(); else render(); break;
     case "toggle-tags": S.tagPanelOpen=!S.tagPanelOpen; render(); break;
     case "toggle-fav":  S.favOnly=!S.favOnly; S.screen="list"; render(); break;
+    case "toggle-com":  S.comOnly=!S.comOnly; S.screen="list"; render(); break;
     case "shopping":    S.screen="shopping"; S.favError=""; window.scrollTo(0,0); render();
                         if(!S.ingLoaded) loadIngredients(); break;
     case "capture":  S.screen="capture"; S.error=""; render(); break;
