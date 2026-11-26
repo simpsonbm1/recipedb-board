@@ -1014,14 +1014,18 @@ function noteBody(note, text){
 }
 
 async function submitCapture(){
-  const url = S.url.trim();
-  if(!url) return;
+  // Either box will do, or both. A written recipe found on its own has no video, so with the
+  // video box empty the first recipe link becomes the entry's main link; the machine reads a
+  // non-video link as a written recipe. Nothing is decided here beyond where the link is filed.
+  let links = S.links.map(v=>v.trim()).filter(Boolean);
+  let url = S.url.trim();
+  if(!url && links.length){ url = links[0]; links = links.slice(1); }
+  if(!url){ S.error = "Add a video link or a recipe link."; render(); return; }
   const slug = url.replace(/^https?:\/\/(www\.)?/,"").replace(/[^\w]+/g,"-").slice(0,40).replace(/-+$/,"");
   const path = `inbox/${utcStamp()}-${slug}.md`;
   // One link stays a bare string; several become the bracketed list the frontmatter parser
   // on the machine already reads. What happens to them is decided there, not here — the
   // phone records what it was given and never chooses a processing path.
-  const links = S.links.map(v=>v.trim()).filter(Boolean);
   const relatedLine = links.length===1 ? `related: ${links[0]}\n`
                     : links.length ? `related: [${links.join(", ")}]\n` : "";
   const body = `---\nurl: ${url}\n${relatedLine}captured: ${utcDate()}\nby: ${deviceKey()}\nstatus: queued\n---\n\n${noteBody(S.note, S.text)}`;
@@ -1032,7 +1036,7 @@ async function submitCapture(){
     // without a second round trip.
     if(S.queueCount!=null) S.queueCount++;
     S.lastUrl=url; S.lastLinks=links.length; S.lastText=!!S.text.trim();
-    S.url=""; S.note=""; S.text=""; S.links=[""]; S.screen="captured"; render();
+    S.url=""; S.note=""; S.text=""; S.links=[""]; S.error=""; S.screen="captured"; render();
   }catch(e){
     S.error = "Could not queue: "+e.message; render();
   }
